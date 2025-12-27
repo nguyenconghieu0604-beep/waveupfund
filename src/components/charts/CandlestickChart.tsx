@@ -184,8 +184,17 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({
   useEffect(() => {
     if (data.length === 0 || !candleSeriesRef.current || !volumeSeriesRef.current) return;
 
+    // Convert Unix timestamp to yyyy-mm-dd format for lightweight-charts
+    const formatTime = (timestamp: number): string => {
+      const date = new Date(timestamp * 1000);
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    };
+
     const candleData = data.map((d) => ({
-      time: d.time as unknown as import('lightweight-charts').Time,
+      time: formatTime(d.time) as import('lightweight-charts').Time,
       open: d.open,
       high: d.high,
       low: d.low,
@@ -193,7 +202,7 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({
     }));
 
     const volumeData = data.map((d) => ({
-      time: d.time as unknown as import('lightweight-charts').Time,
+      time: formatTime(d.time) as import('lightweight-charts').Time,
       value: d.volume,
       color: d.close >= d.open ? 'rgba(34, 197, 94, 0.5)' : 'rgba(239, 68, 68, 0.5)',
     }));
