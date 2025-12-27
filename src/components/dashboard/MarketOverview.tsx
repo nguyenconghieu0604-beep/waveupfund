@@ -106,8 +106,8 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
     const query = searchQuery.toUpperCase();
     return allSymbols
       .filter(s => 
-        s.symbol.toUpperCase().includes(query) || 
-        s.name.toUpperCase().includes(query)
+        s.symbol?.toUpperCase().includes(query) || 
+        s.name?.toUpperCase().includes(query)
       )
       .slice(0, 10);
   }, [searchQuery, allSymbols]);
