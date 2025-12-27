@@ -272,12 +272,12 @@ async function getPriceBoard(req: Request) {
   );
 }
 
-// Get market indices (VN-INDEX, HNX-INDEX, VN30, VN30F1M, etc.)
+// Get market indices (VN-INDEX, HNX-INDEX, VN30, etc.)
 async function getMarketIndices() {
   console.log('[VN-Stock] Getting market indices');
 
-  // Based on vnstock - supported indices and futures
-  const indexSymbols = ['VNINDEX', 'HNXINDEX', 'UPCOMINDEX', 'VN30', 'VN30F1M'];
+  // Based on vnstock - supported indices: VNINDEX, HNXINDEX, UPCOMINDEX, VN30, HNX30
+  const indexSymbols = ['VNINDEX', 'VN30', 'HNXINDEX', 'UPCOMINDEX'];
 
   const payload = {
     timeFrame: 'ONE_DAY',
@@ -300,8 +300,6 @@ async function getMarketIndices() {
 
   const indices = data.map((item: any, index: number) => {
     const len = item.c?.length || 0;
-    // Indices are returned in points, NOT VND*1000 like stocks
-    // VCI returns indices in their actual point values (e.g., 1729800 for 1729.80)
     const currentPrice = len > 0 ? item.c[len - 1] / 1000 : 0;
     const prevPrice = len > 1 ? item.c[len - 2] / 1000 : currentPrice;
     const change = currentPrice - prevPrice;

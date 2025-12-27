@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
+import { motion } from 'framer-motion';
 import { 
   TrendingUp, TrendingDown, ArrowUpRight, ArrowDownRight,
-  RefreshCw
+  Zap, RefreshCw
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Language } from '@/types';
@@ -15,41 +16,51 @@ interface MarketCardProps {
   price: number;
   change: number;
   changePercent: number;
+  delay?: number;
   loading?: boolean;
 }
 
-const MarketCard: React.FC<MarketCardProps> = ({ symbol, name, price, change, changePercent, loading }) => {
+const MarketCard: React.FC<MarketCardProps> = ({ symbol, name, price, change, changePercent, delay = 0, loading }) => {
   const isPositive = change >= 0;
   
   if (loading) {
     return (
-      <div className="glass rounded-2xl p-5 border border-border/50 animate-pulse">
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4, delay }}
+        className="glass rounded-2xl p-5 border border-border/50 animate-pulse"
+      >
         <div className="h-6 bg-muted/50 rounded w-24 mb-2" />
         <div className="h-4 bg-muted/50 rounded w-16 mb-4" />
         <div className="h-8 bg-muted/50 rounded w-32" />
-      </div>
+      </motion.div>
     );
   }
   
   return (
-    <div className="glass rounded-2xl p-5 border border-border/50 hover:border-primary/30 transition-colors cursor-pointer">
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.4, delay }}
+      whileHover={{ y: -4, transition: { duration: 0.2 } }}
+      className="glass rounded-2xl p-5 border border-border/50 card-hover cursor-pointer group"
+    >
       <div className="flex items-start justify-between mb-4">
         <div>
           <h3 className="font-display font-bold text-lg text-foreground">{symbol}</h3>
           <p className="text-xs text-muted-foreground">{name}</p>
         </div>
         <div className={cn(
-          "p-2 rounded-xl",
-          isPositive ? "bg-success/10" : "bg-destructive/10"
+          "p-2 rounded-xl transition-colors",
+          isPositive ? "bg-success/10 group-hover:bg-success/20" : "bg-destructive/10 group-hover:bg-destructive/20"
         )}>
           {isPositive ? <TrendingUp size={18} className="text-success" /> : <TrendingDown size={18} className="text-destructive" />}
         </div>
       </div>
       
       <div className="space-y-2">
-        <p className="font-mono text-2xl font-bold text-foreground">
-          {price.toLocaleString('vi-VN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-        </p>
+        <p className="font-mono text-2xl font-bold text-foreground">{price.toLocaleString('vi-VN', { maximumFractionDigits: 2 })}</p>
         <div className="flex items-center gap-2">
           <span className={cn(
             "flex items-center gap-1 text-sm font-semibold",
@@ -66,7 +77,24 @@ const MarketCard: React.FC<MarketCardProps> = ({ symbol, name, price, change, ch
           </span>
         </div>
       </div>
-    </div>
+
+      {/* Mini chart placeholder */}
+      <div className="mt-4 h-12 flex items-end gap-0.5">
+        {[...Array(20)].map((_, i) => (
+          <div
+            key={i}
+            className={cn(
+              "flex-1 rounded-t transition-all",
+              isPositive ? "bg-success/30" : "bg-destructive/30"
+            )}
+            style={{ 
+              height: `${Math.random() * 80 + 20}%`,
+              opacity: 0.3 + (i / 20) * 0.7
+            }}
+          />
+        ))}
+      </div>
+    </motion.div>
   );
 };
 
@@ -88,11 +116,10 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
 
   // Map indices to display names
   const indexNames: Record<string, { vi: string; en: string }> = {
-    'VNINDEX': { vi: 'Chỉ số VNINDEX', en: 'VN-INDEX' },
-    'VN30': { vi: 'Chỉ số VN30', en: 'VN30 Index' },
-    'HNXINDEX': { vi: 'Chỉ số HNXINDEX', en: 'HNX-INDEX' },
-    'UPCOMINDEX': { vi: 'Chỉ số UPINDEX', en: 'UPCOM-INDEX' },
-    'VN30F1M': { vi: 'Hợp đồng tương lai VN30F1M', en: 'VN30 Futures' },
+    'VNINDEX': { vi: 'Sàn HOSE', en: 'HOSE Exchange' },
+    'VN30': { vi: '30 CP hàng đầu', en: 'Top 30 Stocks' },
+    'HNXINDEX': { vi: 'Sàn HNX', en: 'HNX Exchange' },
+    'UPCOMINDEX': { vi: 'Sàn UPCOM', en: 'UPCOM Exchange' },
   };
 
   // Map stock symbols to names
@@ -110,7 +137,11 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
   return (
     <div className="space-y-8">
       {/* Welcome Section */}
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+      <motion.div
+        initial={{ opacity: 0, y: -20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="flex flex-col md:flex-row md:items-center md:justify-between gap-4"
+      >
         <div>
           <h2 className="font-display text-3xl font-bold text-foreground">{t.welcome}</h2>
           <p className="text-muted-foreground mt-1">
@@ -138,25 +169,31 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
               }
             </span>
           </div>
-          <button
+          <motion.button
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
             onClick={() => { refetchIndices(); refetchPrices(); }}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-primary text-primary-foreground font-medium text-sm hover:bg-primary/90 transition-colors"
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-primary text-primary-foreground font-medium text-sm shadow-glow"
           >
             <RefreshCw size={16} />
             {isVi ? 'Làm mới' : 'Refresh'}
-          </button>
+          </motion.button>
         </div>
-      </div>
+      </motion.div>
 
       {/* Last Update Time */}
       {(indicesUpdate || pricesUpdate) && (
-        <div className="text-xs text-muted-foreground">
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className="text-xs text-muted-foreground"
+        >
           {isVi ? 'Cập nhật lần cuối: ' : 'Last updated: '}
           {(indicesUpdate || pricesUpdate)?.toLocaleTimeString('vi-VN')}
-        </div>
+        </motion.div>
       )}
 
-      {/* Market Indices - Real-time from API - NO ANIMATIONS */}
+      {/* Market Indices - Real-time from API */}
       <div>
         <div className="flex items-center justify-between mb-4">
           <h3 className="font-display text-xl font-semibold text-foreground">
@@ -166,9 +203,9 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
             {isVi ? 'Tự động cập nhật mỗi 30s' : 'Auto-refresh every 30s'}
           </span>
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {indicesLoading ? (
-            [...Array(5)].map((_, i) => (
+            [...Array(4)].map((_, i) => (
               <MarketCard
                 key={i}
                 symbol=""
@@ -176,18 +213,20 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
                 price={0}
                 change={0}
                 changePercent={0}
+                delay={0.1 * i}
                 loading={true}
               />
             ))
           ) : (
-            indices.map((index) => (
+            indices.map((index, i) => (
               <MarketCard
                 key={index.symbol}
-                symbol={index.symbol}
+                symbol={index.symbol.replace('INDEX', '-INDEX')}
                 name={indexNames[index.symbol]?.[isVi ? 'vi' : 'en'] || index.symbol}
                 price={index.price}
                 change={index.change}
                 changePercent={parseFloat(index.changePercent)}
+                delay={0.1 * i}
               />
             ))
           )}
@@ -195,7 +234,11 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
       </div>
 
       {/* Advanced Candlestick Chart */}
-      <div>
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.35 }}
+      >
         <div className="flex items-center justify-between mb-4">
           <h3 className="font-display text-xl font-semibold text-foreground">
             {isVi ? 'Biểu đồ kỹ thuật' : 'Advanced Chart'}
@@ -224,10 +267,15 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
           autoRefresh={marketOpen}
           refreshInterval={30}
         />
-      </div>
+      </motion.div>
 
-      {/* VN30 Stocks - Real-time Price Board - NO ANIMATIONS */}
-      <div className="glass rounded-3xl p-6 border border-border/50">
+      {/* VN30 Stocks - Real-time Price Board */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.5 }}
+        className="glass rounded-3xl p-6 border border-border/50"
+      >
         <div className="flex items-center justify-between mb-6">
           <h3 className="font-display text-xl font-semibold text-foreground">
             {isVi ? 'Bảng giá VN30 Realtime' : 'VN30 Real-time Prices'}
@@ -255,17 +303,20 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
               </div>
             ))
           ) : (
-            prices.map((stock) => (
-              <div
+            prices.map((stock, index) => (
+              <motion.div
                 key={stock.symbol}
-                className="flex items-center justify-between p-4 rounded-xl hover:bg-muted/50 transition-colors cursor-pointer"
+                initial={{ opacity: 0, x: -20 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ delay: 0.6 + index * 0.05 }}
+                className="flex items-center justify-between p-4 rounded-xl hover:bg-muted/50 transition-colors cursor-pointer group"
               >
                 <div className="flex items-center gap-4">
                   <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary/20 to-accent/20 flex items-center justify-center font-display font-bold text-sm text-foreground">
                     {stock.symbol.slice(0, 2)}
                   </div>
                   <div>
-                    <p className="font-semibold text-foreground">{stock.symbol}</p>
+                    <p className="font-semibold text-foreground group-hover:text-primary transition-colors">{stock.symbol}</p>
                     <p className="text-xs text-muted-foreground">
                       {stockNames[stock.symbol]?.[isVi ? 'vi' : 'en'] || stock.symbol}
                     </p>
@@ -287,11 +338,11 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
                     </span>
                   </div>
                 </div>
-              </div>
+              </motion.div>
             ))
           )}
         </div>
-      </div>
+      </motion.div>
     </div>
   );
 };
