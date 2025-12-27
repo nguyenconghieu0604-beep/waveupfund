@@ -321,9 +321,35 @@ async function getMarketIndices() {
   });
 
   const data = await response.json();
-  console.log(`[VN-Stock] Raw index data:`, JSON.stringify(data[0]?.c?.slice(-2)));
+  console.log(`[VN-Stock] Raw index response count:`, data.length);
 
-  const indices = data.map((item: any, index: number) => {
+  // Create a map from symbol to data for correct matching
+  // VCI API returns 'sym' field in each item containing the symbol name
+  const dataMap = new Map<string, any>();
+  data.forEach((item: any) => {
+    if (item.sym) {
+      dataMap.set(item.sym.toUpperCase(), item);
+      console.log(`[VN-Stock] Index item sym: ${item.sym}, prices: ${item.c?.slice(-2)}`);
+    }
+  });
+
+  // Build response in the exact order we want, using symbol from response
+  const indices = indexSymbols.map((symbol) => {
+    const item = dataMap.get(symbol);
+    if (!item) {
+      console.log(`[VN-Stock] No data for index: ${symbol}`);
+      return {
+        symbol,
+        price: 0,
+        change: 0,
+        changePercent: '0.00',
+        volume: 0,
+        open: 0,
+        high: 0,
+        low: 0
+      };
+    }
+
     const len = item.c?.length || 0;
 
     // NOTE: With vnstock/VCI, index values are already in points (e.g. 1729.80),
@@ -334,7 +360,7 @@ async function getMarketIndices() {
     const changePercent = prevPrice > 0 ? (change / prevPrice) * 100 : 0;
 
     return {
-      symbol: indexSymbols[index],
+      symbol,
       price: currentPrice,
       change: change,
       changePercent: changePercent.toFixed(2),
