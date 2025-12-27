@@ -1,8 +1,8 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { createChart, ColorType, CandlestickSeries, HistogramSeries, ISeriesApi } from 'lightweight-charts';
 import { useStockHistory } from '@/hooks/useVNStockData';
 import { cn } from '@/lib/utils';
-import { Loader2, RefreshCw } from 'lucide-react';
+import { Loader2, RefreshCw, Radio } from 'lucide-react';
 import type { Language } from '@/types';
 
 interface CandlestickChartProps {
@@ -11,6 +11,8 @@ interface CandlestickChartProps {
   className?: string;
   lang?: Language;
   height?: number;
+  autoRefresh?: boolean;
+  refreshInterval?: number; // in seconds
 }
 
 const CandlestickChart: React.FC<CandlestickChartProps> = ({
@@ -18,16 +20,37 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({
   interval = '1D',
   className,
   lang = 'vi',
-  height = 400
+  height = 400,
+  autoRefresh = true,
+  refreshInterval = 30
 }) => {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
+  const refreshTimerRef = useRef<NodeJS.Timeout | null>(null);
   
   const [selectedInterval, setSelectedInterval] = useState(interval);
-  
-  const getStartDate = () => {
+  const [isAutoRefresh, setIsAutoRefresh] = useState(autoRefresh);
+  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+
+  // Check if market is open (9:00 - 15:00 Vietnam time, Mon-Fri)
+  const isMarketOpen = useCallback(() => {
+    const now = new Date();
+    const vnTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Ho_Chi_Minh' }));
+    const hours = vnTime.getHours();
+    const minutes = vnTime.getMinutes();
+    const day = vnTime.getDay();
+    
+    // Market closed on weekends
+    if (day === 0 || day === 6) return false;
+    
+    // Market hours: 9:00 - 11:30 and 13:00 - 15:00
+    const time = hours * 60 + minutes;
+    return (time >= 540 && time <= 690) || (time >= 780 && time <= 900);
+  }, []);
+
+  const getStartDate = useCallback(() => {
     const now = new Date();
     switch (selectedInterval) {
       case '1m':
@@ -49,7 +72,7 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({
         now.setFullYear(now.getFullYear() - 1);
     }
     return now.toISOString().split('T')[0];
-  };
+  }, [selectedInterval]);
 
   const { data, loading, error, refetch } = useStockHistory(
     symbol,
@@ -57,6 +80,46 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({
     undefined,
     selectedInterval
   );
+
+  // Auto-refresh logic
+  useEffect(() => {
+    if (!isAutoRefresh) {
+      if (refreshTimerRef.current) {
+        clearInterval(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+      return;
+    }
+
+    const doRefresh = () => {
+      // Only refresh during market hours for intraday intervals
+      if (['1m', '5m', '15m', '30m', '1H'].includes(selectedInterval)) {
+        if (isMarketOpen()) {
+          refetch();
+          setLastUpdate(new Date());
+        }
+      } else {
+        // For daily+ intervals, refresh anyway
+        refetch();
+        setLastUpdate(new Date());
+      }
+    };
+
+    refreshTimerRef.current = setInterval(doRefresh, refreshInterval * 1000);
+
+    return () => {
+      if (refreshTimerRef.current) {
+        clearInterval(refreshTimerRef.current);
+      }
+    };
+  }, [isAutoRefresh, refreshInterval, selectedInterval, refetch, isMarketOpen]);
+
+  // Update lastUpdate when data changes
+  useEffect(() => {
+    if (data.length > 0) {
+      setLastUpdate(new Date());
+    }
+  }, [data]);
 
   useEffect(() => {
     if (!chartContainerRef.current) return;
@@ -146,6 +209,11 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({
     { value: '1M', label: '1TH' },
   ];
 
+  const formatLastUpdate = () => {
+    if (!lastUpdate) return '';
+    return lastUpdate.toLocaleTimeString('vi-VN');
+  };
+
   return (
     <div className={cn("glass rounded-2xl p-4 border border-border/50", className)}>
       <div className="flex items-center justify-between mb-4">
@@ -157,9 +225,39 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({
             </span>
           )}
         </div>
-        <button onClick={() => refetch()} disabled={loading} className="p-2 rounded-lg hover:bg-muted/50">
-          <RefreshCw size={16} className={cn("text-muted-foreground", loading && "animate-spin")} />
-        </button>
+        <div className="flex items-center gap-2">
+          {/* Auto-refresh toggle */}
+          <button
+            onClick={() => setIsAutoRefresh(!isAutoRefresh)}
+            className={cn(
+              "flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium transition-colors",
+              isAutoRefresh 
+                ? "bg-green-500/20 text-green-400 border border-green-500/30" 
+                : "bg-muted/50 text-muted-foreground hover:bg-muted"
+            )}
+            title={isAutoRefresh ? 'Tắt tự động cập nhật' : 'Bật tự động cập nhật'}
+          >
+            <Radio size={12} className={cn(isAutoRefresh && "animate-pulse")} />
+            {isAutoRefresh ? 'LIVE' : 'OFF'}
+          </button>
+          
+          {/* Last update time */}
+          {lastUpdate && (
+            <span className="text-xs text-muted-foreground">
+              {formatLastUpdate()}
+            </span>
+          )}
+          
+          {/* Manual refresh */}
+          <button 
+            onClick={() => { refetch(); setLastUpdate(new Date()); }} 
+            disabled={loading} 
+            className="p-2 rounded-lg hover:bg-muted/50"
+            title="Cập nhật ngay"
+          >
+            <RefreshCw size={16} className={cn("text-muted-foreground", loading && "animate-spin")} />
+          </button>
+        </div>
       </div>
 
       <div className="flex items-center gap-1 mb-4">
@@ -175,6 +273,13 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({
             {int.label}
           </button>
         ))}
+        
+        {/* Refresh interval indicator */}
+        {isAutoRefresh && (
+          <span className="ml-auto text-xs text-muted-foreground">
+            Cập nhật mỗi {refreshInterval}s
+          </span>
+        )}
       </div>
 
       <div className="relative">
