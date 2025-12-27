@@ -301,10 +301,11 @@ async function getMarketIndices() {
 
   const indices = data.map((item: any, index: number) => {
     const len = item.c?.length || 0;
-    // Index values are returned directly (e.g., 1729800 = 1729.80 points)
-    // Need to divide by 1000 to get actual index value
-    const currentPrice = len > 0 ? item.c[len - 1] / 1000 : 0;
-    const prevPrice = len > 1 ? item.c[len - 2] / 1000 : currentPrice;
+
+    // NOTE: With vnstock/VCI, index values are already in points (e.g. 1729.80),
+    // unlike stock prices which are scaled. So we DO NOT divide by 1000 here.
+    const currentPrice = len > 0 ? Number(item.c[len - 1]) : 0;
+    const prevPrice = len > 1 ? Number(item.c[len - 2]) : currentPrice;
     const change = currentPrice - prevPrice;
     const changePercent = prevPrice > 0 ? (change / prevPrice) * 100 : 0;
 
@@ -314,9 +315,9 @@ async function getMarketIndices() {
       change: change,
       changePercent: changePercent.toFixed(2),
       volume: len > 0 ? item.v[len - 1] : 0,
-      open: len > 0 ? item.o[len - 1] / 1000 : 0,
-      high: len > 0 ? item.h[len - 1] / 1000 : 0,
-      low: len > 0 ? item.l[len - 1] / 1000 : 0
+      open: len > 0 ? Number(item.o[len - 1]) : 0,
+      high: len > 0 ? Number(item.h[len - 1]) : 0,
+      low: len > 0 ? Number(item.l[len - 1]) : 0
     };
   });
 
