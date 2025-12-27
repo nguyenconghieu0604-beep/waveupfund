@@ -78,17 +78,17 @@ const MarketCard: React.FC<MarketCardProps> = ({ symbol, name, price, change, ch
         </div>
       </div>
 
-      {/* Mini chart placeholder */}
+      {/* Mini chart - static bars */}
       <div className="mt-4 h-12 flex items-end gap-0.5">
-        {[...Array(20)].map((_, i) => (
+        {[40, 55, 35, 70, 50, 65, 45, 80, 60, 75, 55, 90, 70, 85, 65, 95, 75, 88, 78, 92].map((h, i) => (
           <div
             key={i}
             className={cn(
-              "flex-1 rounded-t transition-all",
+              "flex-1 rounded-t",
               isPositive ? "bg-success/30" : "bg-destructive/30"
             )}
             style={{ 
-              height: `${Math.random() * 80 + 20}%`,
+              height: `${h}%`,
               opacity: 0.3 + (i / 20) * 0.7
             }}
           />

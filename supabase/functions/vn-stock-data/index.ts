@@ -297,9 +297,12 @@ async function getMarketIndices() {
   }
 
   const data = await response.json();
+  console.log(`[VN-Stock] Raw index data:`, JSON.stringify(data[0]?.c?.slice(-2)));
 
   const indices = data.map((item: any, index: number) => {
     const len = item.c?.length || 0;
+    // Index values are returned directly (e.g., 1729800 = 1729.80 points)
+    // Need to divide by 1000 to get actual index value
     const currentPrice = len > 0 ? item.c[len - 1] / 1000 : 0;
     const prevPrice = len > 1 ? item.c[len - 2] / 1000 : currentPrice;
     const change = currentPrice - prevPrice;
@@ -317,7 +320,7 @@ async function getMarketIndices() {
     };
   });
 
-  console.log(`[VN-Stock] Got ${indices.length} indices`);
+  console.log(`[VN-Stock] Processed indices:`, JSON.stringify(indices.map((i: any) => ({ s: i.symbol, p: i.price }))));
 
   return new Response(
     JSON.stringify({ data: indices }),
