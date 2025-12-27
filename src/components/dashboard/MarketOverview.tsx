@@ -2,7 +2,7 @@ import React from 'react';
 import { motion } from 'framer-motion';
 import { 
   TrendingUp, TrendingDown, Activity, ArrowUpRight, ArrowDownRight,
-  Zap, Globe, BarChart3, DollarSign, Bitcoin
+  Zap, BarChart3, Building2, Banknote, Factory
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Language } from '@/types';
@@ -138,12 +138,26 @@ interface MarketOverviewProps {
 
 const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
   const t = translations[lang];
+  const isVi = lang === 'vi';
 
+  // Vietnamese stock market data - December 26, 2025
   const marketData = [
-    { symbol: 'S&P 500', name: 'US Large Cap', price: '5,998.74', change: 73.26, changePercent: 1.24 },
-    { symbol: 'NASDAQ', name: 'Tech Index', price: '19,572.60', change: -23.45, changePercent: -0.12 },
-    { symbol: 'DJI', name: 'Dow Jones', price: '43,729.93', change: 461.88, changePercent: 1.07 },
-    { symbol: 'BTC', name: 'Bitcoin', price: '$98,432', change: 2341.50, changePercent: 2.44 },
+    { symbol: 'VN-INDEX', name: isVi ? 'Sàn HOSE' : 'HOSE Exchange', price: '1,265.43', change: 8.72, changePercent: 0.69 },
+    { symbol: 'HNX-INDEX', name: isVi ? 'Sàn HNX' : 'HNX Exchange', price: '228.56', change: -1.24, changePercent: -0.54 },
+    { symbol: 'VN30', name: isVi ? '30 CP hàng đầu' : 'Top 30 Stocks', price: '1,312.87', change: 12.45, changePercent: 0.96 },
+    { symbol: 'UPCOM', name: isVi ? 'Sàn UPCOM' : 'UPCOM Exchange', price: '92.34', change: 0.67, changePercent: 0.73 },
+  ];
+
+  // Top Vietnamese stocks watchlist
+  const watchlistData = [
+    { symbol: 'VCB', name: isVi ? 'Ngân hàng Vietcombank' : 'Vietcombank', price: '92,500', change: 1.87 },
+    { symbol: 'VHM', name: isVi ? 'Vinhomes' : 'Vinhomes JSC', price: '41,200', change: -0.72 },
+    { symbol: 'VIC', name: isVi ? 'Tập đoàn Vingroup' : 'Vingroup JSC', price: '43,850', change: 2.34 },
+    { symbol: 'HPG', name: isVi ? 'Hòa Phát Group' : 'Hoa Phat Group', price: '26,150', change: 1.15 },
+    { symbol: 'FPT', name: isVi ? 'Tập đoàn FPT' : 'FPT Corporation', price: '142,800', change: 3.21 },
+    { symbol: 'MBB', name: isVi ? 'Ngân hàng MB' : 'MB Bank', price: '27,400', change: -0.36 },
+    { symbol: 'MSN', name: isVi ? 'Tập đoàn Masan' : 'Masan Group', price: '78,500', change: 0.89 },
+    { symbol: 'VNM', name: isVi ? 'Vinamilk' : 'Vinamilk JSC', price: '72,300', change: -1.23 },
   ];
 
   return (
@@ -156,9 +170,17 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
       >
         <div>
           <h2 className="font-display text-3xl font-bold text-foreground">{t.welcome}</h2>
-          <p className="text-muted-foreground mt-1">Here's what's happening in the markets today</p>
+          <p className="text-muted-foreground mt-1">
+            {isVi ? 'Cập nhật thị trường chứng khoán Việt Nam hôm nay' : "Here's what's happening in Vietnamese stock markets today"}
+          </p>
         </div>
         <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-success/10 border border-success/20">
+            <div className="w-2 h-2 rounded-full bg-success animate-pulse" />
+            <span className="text-sm font-medium text-success">
+              {isVi ? 'Phiên giao dịch' : 'Market Open'}
+            </span>
+          </div>
           <motion.button
             whileHover={{ scale: 1.02 }}
             whileTap={{ scale: 0.98 }}
@@ -170,46 +192,51 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
         </div>
       </motion.div>
 
-      {/* Stats Grid */}
+      {/* Stats Grid - Vietnamese Market Stats */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard 
           icon={<Activity size={18} className="text-primary" />}
-          label="Market Cap"
-          value="$48.2T"
-          subValue="+2.4%"
+          label={isVi ? "Vốn hóa HOSE" : "HOSE Market Cap"}
+          value="4,280T"
+          subValue="+0.85%"
           trend="up"
           delay={0.1}
         />
         <StatCard 
-          icon={<DollarSign size={18} className="text-success" />}
-          label="24h Volume"
-          value="$312B"
-          subValue="+18.2%"
+          icon={<Banknote size={18} className="text-success" />}
+          label={isVi ? "GTGD hôm nay" : "Today's Volume"}
+          value="18,542T"
+          subValue="+12.3%"
           trend="up"
           delay={0.15}
         />
         <StatCard 
-          icon={<Globe size={18} className="text-accent" />}
-          label="Fear & Greed"
-          value="72"
-          subValue="Greed"
+          icon={<Building2 size={18} className="text-accent" />}
+          label={isVi ? "Khối ngoại" : "Foreign Flow"}
+          value="-125T"
+          subValue={isVi ? "Bán ròng" : "Net Sell"}
+          trend="down"
           delay={0.2}
         />
         <StatCard 
           icon={<BarChart3 size={18} className="text-secondary" />}
-          label="VIX"
-          value="13.89"
-          subValue="-5.2%"
-          trend="down"
+          label={isVi ? "Tỷ giá USD/VND" : "USD/VND"}
+          value="24,890"
+          subValue="+0.12%"
+          trend="up"
           delay={0.25}
         />
       </div>
 
-      {/* Market Cards Grid */}
+      {/* Market Cards Grid - Vietnamese Indices */}
       <div>
         <div className="flex items-center justify-between mb-4">
-          <h3 className="font-display text-xl font-semibold text-foreground">{t.trending}</h3>
-          <button className="text-sm text-primary hover:underline font-medium">View All</button>
+          <h3 className="font-display text-xl font-semibold text-foreground">
+            {isVi ? 'Chỉ số thị trường' : 'Market Indices'}
+          </h3>
+          <button className="text-sm text-primary hover:underline font-medium">
+            {isVi ? 'Xem tất cả' : 'View All'}
+          </button>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {marketData.map((market, index) => (
@@ -222,7 +249,53 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
         </div>
       </div>
 
-      {/* Watchlist Section */}
+      {/* Sector Overview */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.4 }}
+        className="glass rounded-3xl p-6 border border-border/50"
+      >
+        <div className="flex items-center justify-between mb-6">
+          <h3 className="font-display text-xl font-semibold text-foreground">
+            {isVi ? 'Nhóm ngành hôm nay' : 'Sector Performance'}
+          </h3>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {[
+            { name: isVi ? 'Ngân hàng' : 'Banking', change: 1.24, icon: Building2 },
+            { name: isVi ? 'Bất động sản' : 'Real Estate', change: -0.56, icon: Building2 },
+            { name: isVi ? 'Công nghệ' : 'Technology', change: 2.15, icon: Factory },
+            { name: isVi ? 'Thép' : 'Steel', change: 0.89, icon: Factory },
+          ].map((sector, index) => (
+            <motion.div
+              key={sector.name}
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              transition={{ delay: 0.5 + index * 0.05 }}
+              className={cn(
+                "p-4 rounded-xl border transition-colors cursor-pointer",
+                sector.change >= 0 
+                  ? "bg-success/5 border-success/20 hover:bg-success/10" 
+                  : "bg-destructive/5 border-destructive/20 hover:bg-destructive/10"
+              )}
+            >
+              <div className="flex items-center gap-2 mb-2">
+                <sector.icon size={16} className={sector.change >= 0 ? "text-success" : "text-destructive"} />
+                <span className="text-sm font-medium text-foreground">{sector.name}</span>
+              </div>
+              <span className={cn(
+                "text-lg font-bold",
+                sector.change >= 0 ? "text-success" : "text-destructive"
+              )}>
+                {sector.change >= 0 ? '+' : ''}{sector.change}%
+              </span>
+            </motion.div>
+          ))}
+        </div>
+      </motion.div>
+
+      {/* Watchlist Section - Vietnamese Stocks */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -230,18 +303,16 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
         className="glass rounded-3xl p-6 border border-border/50"
       >
         <div className="flex items-center justify-between mb-6">
-          <h3 className="font-display text-xl font-semibold text-foreground">{t.watchlist}</h3>
-          <button className="text-sm text-primary hover:underline font-medium">Edit</button>
+          <h3 className="font-display text-xl font-semibold text-foreground">
+            {isVi ? 'Cổ phiếu VN30' : 'VN30 Stocks'}
+          </h3>
+          <button className="text-sm text-primary hover:underline font-medium">
+            {isVi ? 'Chỉnh sửa' : 'Edit'}
+          </button>
         </div>
 
         <div className="space-y-3">
-          {[
-            { symbol: 'AAPL', name: 'Apple Inc.', price: '$198.45', change: 2.34 },
-            { symbol: 'NVDA', name: 'NVIDIA Corp.', price: '$875.32', change: -1.23 },
-            { symbol: 'TSLA', name: 'Tesla Inc.', price: '$248.50', change: 4.56 },
-            { symbol: 'MSFT', name: 'Microsoft Corp.', price: '$378.91', change: 1.12 },
-            { symbol: 'AMZN', name: 'Amazon.com', price: '$186.23', change: -0.45 },
-          ].map((stock, index) => (
+          {watchlistData.map((stock, index) => (
             <motion.div
               key={stock.symbol}
               initial={{ opacity: 0, x: -20 }}
@@ -259,13 +330,65 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
                 </div>
               </div>
               <div className="text-right">
-                <p className="font-mono font-semibold text-foreground">{stock.price}</p>
+                <p className="font-mono font-semibold text-foreground">{stock.price}đ</p>
                 <p className={cn(
                   "text-sm font-medium",
                   stock.change >= 0 ? "text-success" : "text-destructive"
                 )}>
                   {stock.change >= 0 ? '+' : ''}{stock.change}%
                 </p>
+              </div>
+            </motion.div>
+          ))}
+        </div>
+      </motion.div>
+
+      {/* Market News Preview */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.7 }}
+        className="glass rounded-3xl p-6 border border-border/50"
+      >
+        <div className="flex items-center justify-between mb-6">
+          <h3 className="font-display text-xl font-semibold text-foreground">
+            {isVi ? 'Tin tức thị trường' : 'Market News'}
+          </h3>
+          <button className="text-sm text-primary hover:underline font-medium">
+            {isVi ? 'Xem thêm' : 'View More'}
+          </button>
+        </div>
+        <div className="space-y-4">
+          {[
+            { 
+              title: isVi ? 'VN-Index vượt mốc 1,265 điểm, thanh khoản tăng mạnh' : 'VN-Index surpasses 1,265 points with strong liquidity',
+              time: '10:30',
+              source: 'CafeF'
+            },
+            { 
+              title: isVi ? 'Khối ngoại bán ròng 125 tỷ đồng trong phiên sáng' : 'Foreign investors net sell 125B VND in morning session',
+              time: '11:15',
+              source: 'VnEconomy'
+            },
+            { 
+              title: isVi ? 'FPT lập đỉnh lịch sử, vốn hóa vượt 200,000 tỷ đồng' : 'FPT reaches all-time high, market cap exceeds 200T VND',
+              time: '09:45',
+              source: 'VnExpress'
+            },
+          ].map((news, index) => (
+            <motion.div
+              key={index}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ delay: 0.8 + index * 0.1 }}
+              className="flex items-start gap-4 p-3 rounded-xl hover:bg-muted/50 transition-colors cursor-pointer"
+            >
+              <div className="flex-shrink-0 w-16 text-center">
+                <span className="text-xs font-medium text-muted-foreground">{news.time}</span>
+              </div>
+              <div className="flex-1">
+                <p className="text-sm font-medium text-foreground line-clamp-2">{news.title}</p>
+                <span className="text-xs text-muted-foreground mt-1">{news.source}</span>
               </div>
             </motion.div>
           ))}
