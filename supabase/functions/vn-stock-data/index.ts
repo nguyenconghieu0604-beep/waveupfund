@@ -1,4 +1,5 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+// deno-lint-ignore-file no-explicit-any
+import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -19,7 +20,7 @@ const INTERVAL_MAP: Record<string, string> = {
   '1M': 'ONE_DAY'
 };
 
-const headers = {
+const vciHeaders = {
   'Content-Type': 'application/json',
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
   'Accept': 'application/json',
@@ -27,7 +28,7 @@ const headers = {
   'Referer': 'https://trading.vietcap.com.vn/'
 };
 
-serve(async (req) => {
+serve(async (req: Request) => {
   // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -41,7 +42,7 @@ serve(async (req) => {
 
     switch (action) {
       case 'history':
-        return await getStockHistory(req, url);
+        return await getStockHistory(url);
       case 'symbols':
         return await getAllSymbols();
       case 'symbols-by-group':
@@ -67,7 +68,7 @@ serve(async (req) => {
 });
 
 // Get stock OHLCV history
-async function getStockHistory(req: Request, url: URL) {
+async function getStockHistory(url: URL) {
   const symbol = url.searchParams.get('symbol') || 'VCB';
   const start = url.searchParams.get('start') || '2024-01-01';
   const end = url.searchParams.get('end') || new Date().toISOString().split('T')[0];
@@ -103,7 +104,7 @@ async function getStockHistory(req: Request, url: URL) {
 
   const response = await fetch(`${VCI_TRADING_URL}chart/OHLCChart/gap-chart`, {
     method: 'POST',
-    headers,
+    headers: vciHeaders,
     body: JSON.stringify(payload)
   });
 
@@ -115,7 +116,7 @@ async function getStockHistory(req: Request, url: URL) {
   console.log(`[VN-Stock] Raw response type:`, typeof data);
 
   // Transform VCI format to standard OHLCV
-  let ohlcv: any[] = [];
+  const ohlcv: any[] = [];
   
   if (Array.isArray(data) && data.length > 0) {
     const symbolData = data[0];
@@ -151,7 +152,7 @@ async function getAllSymbols() {
 
   const response = await fetch(`${VCI_TRADING_URL}price/symbols/getAll`, {
     method: 'GET',
-    headers
+    headers: vciHeaders
   });
 
   if (!response.ok) {
@@ -183,7 +184,7 @@ async function getSymbolsByGroup(url: URL) {
 
   const response = await fetch(`${VCI_TRADING_URL}price/symbols/getByGroup?group=${group}`, {
     method: 'GET',
-    headers
+    headers: vciHeaders
   });
 
   if (!response.ok) {
@@ -259,7 +260,7 @@ async function getPriceBoard(req: Request) {
 
   const response = await fetch(VCI_GRAPHQL_URL, {
     method: 'POST',
-    headers,
+    headers: vciHeaders,
     body: JSON.stringify(payload)
   });
 
@@ -322,7 +323,7 @@ async function getMarketIndices() {
 
   const response = await fetch(`${VCI_TRADING_URL}chart/OHLCChart/gap-chart`, {
     method: 'POST',
-    headers,
+    headers: vciHeaders,
     body: JSON.stringify(payload)
   });
 

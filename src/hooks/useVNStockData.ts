@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback } from 'react';
-import { supabase } from '@/integrations/supabase/client';
 
 export interface OHLCVData {
   time: number;
@@ -58,16 +57,8 @@ export function useStockHistory(symbol: string, start: string, end?: string, int
 
     try {
       const endDate = end || new Date().toISOString().split('T')[0];
-      
-      const { data: response, error: fnError } = await supabase.functions.invoke('vn-stock-data', {
-        body: {},
-        headers: {
-          'Content-Type': 'application/json'
-        }
-      });
-
-      // Since we can't pass query params to invoke, use fetch directly
       const projectUrl = import.meta.env.VITE_SUPABASE_URL;
+      
       const res = await fetch(
         `${projectUrl}/functions/v1/vn-stock-data?action=history&symbol=${symbol}&start=${start}&end=${endDate}&interval=${interval}`,
         {
@@ -87,6 +78,7 @@ export function useStockHistory(symbol: string, start: string, end?: string, int
         throw new Error(result.error);
       }
 
+      console.log('[useStockHistory] Got data:', result.data?.length, 'candles');
       setData(result.data || []);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to fetch stock history';
