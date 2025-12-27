@@ -1,25 +1,42 @@
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import { 
-  TrendingUp, TrendingDown, Activity, ArrowUpRight, ArrowDownRight,
-  Zap, BarChart3, Building2, Banknote, Factory
+  TrendingUp, TrendingDown, ArrowUpRight, ArrowDownRight,
+  Zap, RefreshCw
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Language } from '@/types';
 import { translations } from '@/lib/translations';
 import CandlestickChart from '@/components/charts/CandlestickChart';
+import { useMarketIndices, usePriceBoardRealtime, isMarketOpen } from '@/hooks/useMarketData';
 
 interface MarketCardProps {
   symbol: string;
   name: string;
-  price: string;
+  price: number;
   change: number;
   changePercent: number;
   delay?: number;
+  loading?: boolean;
 }
 
-const MarketCard: React.FC<MarketCardProps> = ({ symbol, name, price, change, changePercent, delay = 0 }) => {
+const MarketCard: React.FC<MarketCardProps> = ({ symbol, name, price, change, changePercent, delay = 0, loading }) => {
   const isPositive = change >= 0;
+  
+  if (loading) {
+    return (
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4, delay }}
+        className="glass rounded-2xl p-5 border border-border/50 animate-pulse"
+      >
+        <div className="h-6 bg-muted/50 rounded w-24 mb-2" />
+        <div className="h-4 bg-muted/50 rounded w-16 mb-4" />
+        <div className="h-8 bg-muted/50 rounded w-32" />
+      </motion.div>
+    );
+  }
   
   return (
     <motion.div
@@ -43,7 +60,7 @@ const MarketCard: React.FC<MarketCardProps> = ({ symbol, name, price, change, ch
       </div>
       
       <div className="space-y-2">
-        <p className="font-mono text-2xl font-bold text-foreground">{price}</p>
+        <p className="font-mono text-2xl font-bold text-foreground">{price.toLocaleString('vi-VN', { maximumFractionDigits: 2 })}</p>
         <div className="flex items-center gap-2">
           <span className={cn(
             "flex items-center gap-1 text-sm font-semibold",
@@ -81,58 +98,6 @@ const MarketCard: React.FC<MarketCardProps> = ({ symbol, name, price, change, ch
   );
 };
 
-interface StatCardProps {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-  subValue?: string;
-  trend?: 'up' | 'down';
-  delay?: number;
-}
-
-const StatCard: React.FC<StatCardProps> = ({ icon, label, value, subValue, trend, delay = 0 }) => {
-  return (
-    <motion.div
-      initial={{ opacity: 0, scale: 0.95 }}
-      animate={{ opacity: 1, scale: 1 }}
-      transition={{ duration: 0.3, delay }}
-      className="glass rounded-2xl p-5 border border-border/50"
-    >
-      <div className="flex items-center gap-3 mb-3">
-        <div className="p-2 rounded-xl bg-primary/10">
-          {icon}
-        </div>
-        <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{label}</span>
-      </div>
-      <div className="flex items-end justify-between">
-        <div>
-          <p className="font-mono text-2xl font-bold text-foreground">{value}</p>
-          {subValue && (
-            <p className={cn(
-              "text-sm font-medium mt-1",
-              trend === 'up' ? "text-success" : trend === 'down' ? "text-destructive" : "text-muted-foreground"
-            )}>
-              {subValue}
-            </p>
-          )}
-        </div>
-        {trend && (
-          <div className={cn(
-            "p-1.5 rounded-lg",
-            trend === 'up' ? "bg-success/10" : "bg-destructive/10"
-          )}>
-            {trend === 'up' ? (
-              <ArrowUpRight size={16} className="text-success" />
-            ) : (
-              <ArrowDownRight size={16} className="text-destructive" />
-            )}
-          </div>
-        )}
-      </div>
-    </motion.div>
-  );
-};
-
 interface MarketOverviewProps {
   lang: Language;
 }
@@ -141,26 +106,33 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
   const t = translations[lang];
   const isVi = lang === 'vi';
   const [selectedSymbol, setSelectedSymbol] = useState('VCB');
+  
+  // Real-time data hooks
+  const { indices, loading: indicesLoading, lastUpdate: indicesUpdate, refetch: refetchIndices } = useMarketIndices(30000);
+  const vn30Symbols = ['VCB', 'VHM', 'VIC', 'HPG', 'FPT', 'MBB', 'MSN', 'VNM'];
+  const { prices, loading: pricesLoading, lastUpdate: pricesUpdate, refetch: refetchPrices } = usePriceBoardRealtime(vn30Symbols, 10000);
+  
+  const marketOpen = isMarketOpen();
 
-  // Vietnamese stock market data - December 26, 2025
-  const marketData = [
-    { symbol: 'VN-INDEX', name: isVi ? 'Sàn HOSE' : 'HOSE Exchange', price: '1,265.43', change: 8.72, changePercent: 0.69 },
-    { symbol: 'HNX-INDEX', name: isVi ? 'Sàn HNX' : 'HNX Exchange', price: '228.56', change: -1.24, changePercent: -0.54 },
-    { symbol: 'VN30', name: isVi ? '30 CP hàng đầu' : 'Top 30 Stocks', price: '1,312.87', change: 12.45, changePercent: 0.96 },
-    { symbol: 'UPCOM', name: isVi ? 'Sàn UPCOM' : 'UPCOM Exchange', price: '92.34', change: 0.67, changePercent: 0.73 },
-  ];
+  // Map indices to display names
+  const indexNames: Record<string, { vi: string; en: string }> = {
+    'VNINDEX': { vi: 'Sàn HOSE', en: 'HOSE Exchange' },
+    'VN30': { vi: '30 CP hàng đầu', en: 'Top 30 Stocks' },
+    'HNXINDEX': { vi: 'Sàn HNX', en: 'HNX Exchange' },
+    'UPCOMINDEX': { vi: 'Sàn UPCOM', en: 'UPCOM Exchange' },
+  };
 
-  // Top Vietnamese stocks watchlist
-  const watchlistData = [
-    { symbol: 'VCB', name: isVi ? 'Ngân hàng Vietcombank' : 'Vietcombank', price: '92,500', change: 1.87 },
-    { symbol: 'VHM', name: isVi ? 'Vinhomes' : 'Vinhomes JSC', price: '41,200', change: -0.72 },
-    { symbol: 'VIC', name: isVi ? 'Tập đoàn Vingroup' : 'Vingroup JSC', price: '43,850', change: 2.34 },
-    { symbol: 'HPG', name: isVi ? 'Hòa Phát Group' : 'Hoa Phat Group', price: '26,150', change: 1.15 },
-    { symbol: 'FPT', name: isVi ? 'Tập đoàn FPT' : 'FPT Corporation', price: '142,800', change: 3.21 },
-    { symbol: 'MBB', name: isVi ? 'Ngân hàng MB' : 'MB Bank', price: '27,400', change: -0.36 },
-    { symbol: 'MSN', name: isVi ? 'Tập đoàn Masan' : 'Masan Group', price: '78,500', change: 0.89 },
-    { symbol: 'VNM', name: isVi ? 'Vinamilk' : 'Vinamilk JSC', price: '72,300', change: -1.23 },
-  ];
+  // Map stock symbols to names
+  const stockNames: Record<string, { vi: string; en: string }> = {
+    'VCB': { vi: 'Ngân hàng Vietcombank', en: 'Vietcombank' },
+    'VHM': { vi: 'Vinhomes', en: 'Vinhomes JSC' },
+    'VIC': { vi: 'Tập đoàn Vingroup', en: 'Vingroup JSC' },
+    'HPG': { vi: 'Hòa Phát Group', en: 'Hoa Phat Group' },
+    'FPT': { vi: 'Tập đoàn FPT', en: 'FPT Corporation' },
+    'MBB': { vi: 'Ngân hàng MB', en: 'MB Bank' },
+    'MSN': { vi: 'Tập đoàn Masan', en: 'Masan Group' },
+    'VNM': { vi: 'Vinamilk', en: 'Vinamilk JSC' },
+  };
 
   return (
     <div className="space-y-8">
@@ -173,81 +145,91 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
         <div>
           <h2 className="font-display text-3xl font-bold text-foreground">{t.welcome}</h2>
           <p className="text-muted-foreground mt-1">
-            {isVi ? 'Cập nhật thị trường chứng khoán Việt Nam hôm nay' : "Here's what's happening in Vietnamese stock markets today"}
+            {isVi ? 'Dữ liệu realtime từ VCI Trading API' : 'Real-time data from VCI Trading API'}
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-success/10 border border-success/20">
-            <div className="w-2 h-2 rounded-full bg-success animate-pulse" />
-            <span className="text-sm font-medium text-success">
-              {isVi ? 'Phiên giao dịch' : 'Market Open'}
+          <div className={cn(
+            "flex items-center gap-2 px-3 py-2 rounded-xl border",
+            marketOpen 
+              ? "bg-success/10 border-success/20" 
+              : "bg-muted/50 border-border"
+          )}>
+            <div className={cn(
+              "w-2 h-2 rounded-full",
+              marketOpen ? "bg-success animate-pulse" : "bg-muted-foreground"
+            )} />
+            <span className={cn(
+              "text-sm font-medium",
+              marketOpen ? "text-success" : "text-muted-foreground"
+            )}>
+              {marketOpen 
+                ? (isVi ? 'Phiên giao dịch' : 'Market Open')
+                : (isVi ? 'Ngoài giờ giao dịch' : 'Market Closed')
+              }
             </span>
           </div>
           <motion.button
             whileHover={{ scale: 1.02 }}
             whileTap={{ scale: 0.98 }}
+            onClick={() => { refetchIndices(); refetchPrices(); }}
             className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-primary text-primary-foreground font-medium text-sm shadow-glow"
           >
-            <Zap size={16} />
-            {t.quick_actions}
+            <RefreshCw size={16} />
+            {isVi ? 'Làm mới' : 'Refresh'}
           </motion.button>
         </div>
       </motion.div>
 
-      {/* Stats Grid - Vietnamese Market Stats */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard 
-          icon={<Activity size={18} className="text-primary" />}
-          label={isVi ? "Vốn hóa HOSE" : "HOSE Market Cap"}
-          value="4,280T"
-          subValue="+0.85%"
-          trend="up"
-          delay={0.1}
-        />
-        <StatCard 
-          icon={<Banknote size={18} className="text-success" />}
-          label={isVi ? "GTGD hôm nay" : "Today's Volume"}
-          value="18,542T"
-          subValue="+12.3%"
-          trend="up"
-          delay={0.15}
-        />
-        <StatCard 
-          icon={<Building2 size={18} className="text-accent" />}
-          label={isVi ? "Khối ngoại" : "Foreign Flow"}
-          value="-125T"
-          subValue={isVi ? "Bán ròng" : "Net Sell"}
-          trend="down"
-          delay={0.2}
-        />
-        <StatCard 
-          icon={<BarChart3 size={18} className="text-secondary" />}
-          label={isVi ? "Tỷ giá USD/VND" : "USD/VND"}
-          value="24,890"
-          subValue="+0.12%"
-          trend="up"
-          delay={0.25}
-        />
-      </div>
+      {/* Last Update Time */}
+      {(indicesUpdate || pricesUpdate) && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className="text-xs text-muted-foreground"
+        >
+          {isVi ? 'Cập nhật lần cuối: ' : 'Last updated: '}
+          {(indicesUpdate || pricesUpdate)?.toLocaleTimeString('vi-VN')}
+        </motion.div>
+      )}
 
-      {/* Market Cards Grid - Vietnamese Indices */}
+      {/* Market Indices - Real-time from API */}
       <div>
         <div className="flex items-center justify-between mb-4">
           <h3 className="font-display text-xl font-semibold text-foreground">
             {isVi ? 'Chỉ số thị trường' : 'Market Indices'}
           </h3>
-          <button className="text-sm text-primary hover:underline font-medium">
-            {isVi ? 'Xem tất cả' : 'View All'}
-          </button>
+          <span className="text-xs text-muted-foreground">
+            {isVi ? 'Tự động cập nhật mỗi 30s' : 'Auto-refresh every 30s'}
+          </span>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {marketData.map((market, index) => (
-            <MarketCard
-              key={market.symbol}
-              {...market}
-              delay={0.1 * index}
-            />
-          ))}
+          {indicesLoading ? (
+            [...Array(4)].map((_, i) => (
+              <MarketCard
+                key={i}
+                symbol=""
+                name=""
+                price={0}
+                change={0}
+                changePercent={0}
+                delay={0.1 * i}
+                loading={true}
+              />
+            ))
+          ) : (
+            indices.map((index, i) => (
+              <MarketCard
+                key={index.symbol}
+                symbol={index.symbol.replace('INDEX', '-INDEX')}
+                name={indexNames[index.symbol]?.[isVi ? 'vi' : 'en'] || index.symbol}
+                price={index.price}
+                change={index.change}
+                changePercent={parseFloat(index.changePercent)}
+                delay={0.1 * i}
+              />
+            ))
+          )}
         </div>
       </div>
 
@@ -282,58 +264,12 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
           symbol={selectedSymbol} 
           lang={lang} 
           height={450}
-          autoRefresh={true}
+          autoRefresh={marketOpen}
           refreshInterval={30}
         />
       </motion.div>
 
-      {/* Sector Overview */}
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.4 }}
-        className="glass rounded-3xl p-6 border border-border/50"
-      >
-        <div className="flex items-center justify-between mb-6">
-          <h3 className="font-display text-xl font-semibold text-foreground">
-            {isVi ? 'Nhóm ngành hôm nay' : 'Sector Performance'}
-          </h3>
-        </div>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          {[
-            { name: isVi ? 'Ngân hàng' : 'Banking', change: 1.24, icon: Building2 },
-            { name: isVi ? 'Bất động sản' : 'Real Estate', change: -0.56, icon: Building2 },
-            { name: isVi ? 'Công nghệ' : 'Technology', change: 2.15, icon: Factory },
-            { name: isVi ? 'Thép' : 'Steel', change: 0.89, icon: Factory },
-          ].map((sector, index) => (
-            <motion.div
-              key={sector.name}
-              initial={{ opacity: 0, scale: 0.9 }}
-              animate={{ opacity: 1, scale: 1 }}
-              transition={{ delay: 0.5 + index * 0.05 }}
-              className={cn(
-                "p-4 rounded-xl border transition-colors cursor-pointer",
-                sector.change >= 0 
-                  ? "bg-success/5 border-success/20 hover:bg-success/10" 
-                  : "bg-destructive/5 border-destructive/20 hover:bg-destructive/10"
-              )}
-            >
-              <div className="flex items-center gap-2 mb-2">
-                <sector.icon size={16} className={sector.change >= 0 ? "text-success" : "text-destructive"} />
-                <span className="text-sm font-medium text-foreground">{sector.name}</span>
-              </div>
-              <span className={cn(
-                "text-lg font-bold",
-                sector.change >= 0 ? "text-success" : "text-destructive"
-              )}>
-                {sector.change >= 0 ? '+' : ''}{sector.change}%
-              </span>
-            </motion.div>
-          ))}
-        </div>
-      </motion.div>
-
-      {/* Watchlist Section - Vietnamese Stocks */}
+      {/* VN30 Stocks - Real-time Price Board */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -342,94 +278,69 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
       >
         <div className="flex items-center justify-between mb-6">
           <h3 className="font-display text-xl font-semibold text-foreground">
-            {isVi ? 'Cổ phiếu VN30' : 'VN30 Stocks'}
+            {isVi ? 'Bảng giá VN30 Realtime' : 'VN30 Real-time Prices'}
           </h3>
-          <button className="text-sm text-primary hover:underline font-medium">
-            {isVi ? 'Chỉnh sửa' : 'Edit'}
-          </button>
+          <span className="text-xs text-muted-foreground">
+            {isVi ? 'Tự động cập nhật mỗi 10s' : 'Auto-refresh every 10s'}
+          </span>
         </div>
 
         <div className="space-y-3">
-          {watchlistData.map((stock, index) => (
-            <motion.div
-              key={stock.symbol}
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: 0.6 + index * 0.05 }}
-              className="flex items-center justify-between p-4 rounded-xl hover:bg-muted/50 transition-colors cursor-pointer group"
-            >
-              <div className="flex items-center gap-4">
-                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary/20 to-accent/20 flex items-center justify-center font-display font-bold text-sm text-foreground">
-                  {stock.symbol.slice(0, 2)}
+          {pricesLoading ? (
+            [...Array(8)].map((_, i) => (
+              <div key={i} className="flex items-center justify-between p-4 rounded-xl bg-muted/20 animate-pulse">
+                <div className="flex items-center gap-4">
+                  <div className="w-10 h-10 rounded-xl bg-muted/50" />
+                  <div>
+                    <div className="h-4 bg-muted/50 rounded w-16 mb-1" />
+                    <div className="h-3 bg-muted/50 rounded w-24" />
+                  </div>
                 </div>
-                <div>
-                  <p className="font-semibold text-foreground group-hover:text-primary transition-colors">{stock.symbol}</p>
-                  <p className="text-xs text-muted-foreground">{stock.name}</p>
+                <div className="text-right">
+                  <div className="h-4 bg-muted/50 rounded w-20 mb-1" />
+                  <div className="h-3 bg-muted/50 rounded w-12" />
                 </div>
               </div>
-              <div className="text-right">
-                <p className="font-mono font-semibold text-foreground">{stock.price}đ</p>
-                <p className={cn(
-                  "text-sm font-medium",
-                  stock.change >= 0 ? "text-success" : "text-destructive"
-                )}>
-                  {stock.change >= 0 ? '+' : ''}{stock.change}%
-                </p>
-              </div>
-            </motion.div>
-          ))}
-        </div>
-      </motion.div>
-
-      {/* Market News Preview */}
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.7 }}
-        className="glass rounded-3xl p-6 border border-border/50"
-      >
-        <div className="flex items-center justify-between mb-6">
-          <h3 className="font-display text-xl font-semibold text-foreground">
-            {isVi ? 'Tin tức thị trường' : 'Market News'}
-          </h3>
-          <button className="text-sm text-primary hover:underline font-medium">
-            {isVi ? 'Xem thêm' : 'View More'}
-          </button>
-        </div>
-        <div className="space-y-4">
-          {[
-            { 
-              title: isVi ? 'VN-Index vượt mốc 1,265 điểm, thanh khoản tăng mạnh' : 'VN-Index surpasses 1,265 points with strong liquidity',
-              time: '10:30',
-              source: 'CafeF'
-            },
-            { 
-              title: isVi ? 'Khối ngoại bán ròng 125 tỷ đồng trong phiên sáng' : 'Foreign investors net sell 125B VND in morning session',
-              time: '11:15',
-              source: 'VnEconomy'
-            },
-            { 
-              title: isVi ? 'FPT lập đỉnh lịch sử, vốn hóa vượt 200,000 tỷ đồng' : 'FPT reaches all-time high, market cap exceeds 200T VND',
-              time: '09:45',
-              source: 'VnExpress'
-            },
-          ].map((news, index) => (
-            <motion.div
-              key={index}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ delay: 0.8 + index * 0.1 }}
-              className="flex items-start gap-4 p-3 rounded-xl hover:bg-muted/50 transition-colors cursor-pointer"
-            >
-              <div className="flex-shrink-0 w-16 text-center">
-                <span className="text-xs font-medium text-muted-foreground">{news.time}</span>
-              </div>
-              <div className="flex-1">
-                <p className="text-sm font-medium text-foreground line-clamp-2">{news.title}</p>
-                <span className="text-xs text-muted-foreground mt-1">{news.source}</span>
-              </div>
-            </motion.div>
-          ))}
+            ))
+          ) : (
+            prices.map((stock, index) => (
+              <motion.div
+                key={stock.symbol}
+                initial={{ opacity: 0, x: -20 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ delay: 0.6 + index * 0.05 }}
+                className="flex items-center justify-between p-4 rounded-xl hover:bg-muted/50 transition-colors cursor-pointer group"
+              >
+                <div className="flex items-center gap-4">
+                  <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary/20 to-accent/20 flex items-center justify-center font-display font-bold text-sm text-foreground">
+                    {stock.symbol.slice(0, 2)}
+                  </div>
+                  <div>
+                    <p className="font-semibold text-foreground group-hover:text-primary transition-colors">{stock.symbol}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {stockNames[stock.symbol]?.[isVi ? 'vi' : 'en'] || stock.symbol}
+                    </p>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <p className="font-mono font-semibold text-foreground">
+                    {(stock.price * 1000).toLocaleString('vi-VN')}đ
+                  </p>
+                  <div className="flex items-center justify-end gap-2">
+                    <span className={cn(
+                      "text-sm font-medium",
+                      stock.change >= 0 ? "text-success" : "text-destructive"
+                    )}>
+                      {stock.change >= 0 ? '+' : ''}{stock.changePercent.toFixed(2)}%
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      {(stock.volume / 1000).toFixed(0)}K
+                    </span>
+                  </div>
+                </div>
+              </motion.div>
+            ))
+          )}
         </div>
       </motion.div>
     </div>
