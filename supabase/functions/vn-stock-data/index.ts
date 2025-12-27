@@ -6,9 +6,8 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// VCI Trading API - Based on vnstock library documentation
+// VCI Trading API - Based on vnstock library
 const VCI_TRADING_URL = 'https://trading.vietcap.com.vn/api/';
-const VCI_GRAPHQL_URL = 'https://trading.vietcap.com.vn/data-mt/graphql';
 
 const INTERVAL_MAP: Record<string, string> = {
   '1m': 'ONE_MINUTE',
@@ -43,8 +42,6 @@ serve(async (req: Request) => {
     switch (action) {
       case 'history':
         return await getStockHistory(url);
-      case 'intraday':
-        return await getIntraday(url);
       case 'symbols':
         return await getAllSymbols();
       case 'symbols-by-group':
@@ -55,7 +52,7 @@ serve(async (req: Request) => {
         return await getMarketIndices();
       default:
         return new Response(
-          JSON.stringify({ error: 'Invalid action. Use: history, intraday, symbols, symbols-by-group, price-board, indices' }),
+          JSON.stringify({ error: 'Invalid action. Use: history, symbols, symbols-by-group, price-board, indices' }),
           { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
     }
@@ -143,56 +140,6 @@ async function getStockHistory(url: URL) {
   );
 }
 
-// Get intraday data - Based on vnstock quote.intraday()
-async function getIntraday(url: URL) {
-  const symbol = url.searchParams.get('symbol') || 'VCB';
-  const pageSize = parseInt(url.searchParams.get('page_size') || '1000');
-
-  console.log(`[VN-Stock] Getting intraday for ${symbol}, page_size: ${pageSize}`);
-
-  const payload = {
-    query: `{
-      StockRealtimeByCode(stockCode: "${symbol.toUpperCase()}") {
-        stockSymbol
-        matchedPrice
-        matchedVolume
-        priceChange
-        priceChangePercent
-        highPrice
-        lowPrice
-        avgPrice
-        accumulatedVolume
-        accumulatedValue
-        buyForeignQuantity
-        sellForeignQuantity
-        time
-        __typename
-      }
-    }`,
-    variables: {}
-  };
-
-  const response = await fetch(VCI_GRAPHQL_URL, {
-    method: 'POST',
-    headers: vciHeaders,
-    body: JSON.stringify(payload)
-  });
-
-  if (!response.ok) {
-    throw new Error(`VCI GraphQL error: ${response.status}`);
-  }
-
-  const result = await response.json();
-  const stockData = result.data?.StockRealtimeByCode;
-
-  console.log(`[VN-Stock] Got intraday data for ${symbol}`);
-
-  return new Response(
-    JSON.stringify({ symbol, data: stockData }),
-    { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-  );
-}
-
 // Get all symbols
 async function getAllSymbols() {
   console.log('[VN-Stock] Getting all symbols');
@@ -254,9 +201,9 @@ async function getSymbolsByGroup(url: URL) {
   );
 }
 
-// Get real-time price board - Based on vnstock quote.price_board()
+// Get real-time price board using OHLC API (same as indices but for stocks)
 async function getPriceBoard(req: Request) {
-  let symbols = ['VCB', 'VHM', 'VIC', 'HPG', 'FPT'];
+  let symbols = ['VCB', 'VHM', 'VIC', 'HPG', 'FPT', 'MBB', 'MSN', 'VNM'];
   
   try {
     const body = await req.json();
@@ -267,90 +214,57 @@ async function getPriceBoard(req: Request) {
   
   console.log(`[VN-Stock] Getting price board for: ${symbols.join(', ')}`);
 
+  // Use OHLC API to get latest prices - more reliable than GraphQL
   const payload = {
-    query: `{
-      MarketPriceBoard(codes: ${JSON.stringify(symbols)}) {
-        stockNo
-        ceiling
-        floor
-        refPrice
-        stockSymbol
-        matchedPrice
-        matchedVolume
-        matchedBy
-        priceChange
-        priceChangePercent
-        highPrice
-        lowPrice
-        foreignBuyVolume
-        foreignSellVolume
-        totalRoom
-        currentRoom
-        openPrice
-        accumulatedVolume
-        accumulatedValue
-        buyForeignQuantity
-        sellForeignQuantity
-        matchedValue
-        buyPrice1
-        buyVolume1
-        buyPrice2
-        buyVolume2
-        buyPrice3
-        buyVolume3
-        sellPrice1
-        sellVolume1
-        sellPrice2
-        sellVolume2
-        sellPrice3
-        sellVolume3
-        __typename
-      }
-    }`,
-    variables: {}
+    timeFrame: 'ONE_DAY',
+    symbols: symbols.map(s => s.toUpperCase()),
+    to: Math.floor(Date.now() / 1000),
+    countBack: 2
   };
 
-  const response = await fetch(VCI_GRAPHQL_URL, {
+  const response = await fetch(`${VCI_TRADING_URL}chart/OHLCChart/gap-chart`, {
     method: 'POST',
     headers: vciHeaders,
     body: JSON.stringify(payload)
   });
 
   if (!response.ok) {
-    throw new Error(`VCI GraphQL error: ${response.status}`);
+    throw new Error(`VCI API error: ${response.status}`);
   }
 
-  const result = await response.json();
-  const priceData = result.data?.MarketPriceBoard || [];
+  const data = await response.json();
+  console.log(`[VN-Stock] Got OHLC data for ${data.length} stocks`);
 
-  console.log(`[VN-Stock] Got price data for ${priceData.length} stocks`);
+  const transformed = data.map((item: any, index: number) => {
+    const len = item.c?.length || 0;
+    const currentPrice = len > 0 ? item.c[len - 1] / 1000 : 0;
+    const prevPrice = len > 1 ? item.c[len - 2] / 1000 : currentPrice;
+    const openPrice = len > 0 ? item.o[len - 1] / 1000 : 0;
+    const highPrice = len > 0 ? item.h[len - 1] / 1000 : 0;
+    const lowPrice = len > 0 ? item.l[len - 1] / 1000 : 0;
+    const volume = len > 0 ? item.v[len - 1] : 0;
+    const change = currentPrice - prevPrice;
+    const changePercent = prevPrice > 0 ? (change / prevPrice) * 100 : 0;
 
-  const transformed = priceData.map((item: any) => ({
-    symbol: item.stockSymbol,
-    price: item.matchedPrice / 1000,
-    change: item.priceChange / 1000,
-    changePercent: item.priceChangePercent,
-    ceiling: item.ceiling / 1000,
-    floor: item.floor / 1000,
-    ref: item.refPrice / 1000,
-    open: item.openPrice / 1000,
-    high: item.highPrice / 1000,
-    low: item.lowPrice / 1000,
-    volume: item.accumulatedVolume,
-    value: item.accumulatedValue,
-    foreignBuy: item.foreignBuyVolume,
-    foreignSell: item.foreignSellVolume,
-    bid: [
-      { price: item.buyPrice1 / 1000, volume: item.buyVolume1 },
-      { price: item.buyPrice2 / 1000, volume: item.buyVolume2 },
-      { price: item.buyPrice3 / 1000, volume: item.buyVolume3 }
-    ],
-    ask: [
-      { price: item.sellPrice1 / 1000, volume: item.sellVolume1 },
-      { price: item.sellPrice2 / 1000, volume: item.sellVolume2 },
-      { price: item.sellPrice3 / 1000, volume: item.sellVolume3 }
-    ]
-  }));
+    return {
+      symbol: symbols[index],
+      price: currentPrice,
+      change: change,
+      changePercent: changePercent,
+      open: openPrice,
+      high: highPrice,
+      low: lowPrice,
+      volume: volume,
+      ref: prevPrice,
+      ceiling: prevPrice * 1.07, // Vietnam stock ceiling is +7%
+      floor: prevPrice * 0.93,   // Vietnam stock floor is -7%
+      value: currentPrice * volume * 1000,
+      foreignBuy: 0,
+      foreignSell: 0,
+      bid: [],
+      ask: []
+    };
+  });
 
   return new Response(
     JSON.stringify({ data: transformed }),
