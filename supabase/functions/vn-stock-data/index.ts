@@ -69,7 +69,19 @@ serve(async (req: Request) => {
 
   try {
     const url = new URL(req.url);
-    const action = url.searchParams.get('action');
+
+    // Support both querystring (?action=...) and JSON body { action: ... }
+    let body: any = null;
+    try {
+      const ct = req.headers.get('content-type') || '';
+      if (ct.includes('application/json')) {
+        body = await req.clone().json();
+      }
+    } catch {
+      body = null;
+    }
+
+    const action = url.searchParams.get('action') ?? body?.action;
 
     console.log(`[VN-Stock] Action: ${action}`);
 
@@ -81,7 +93,7 @@ serve(async (req: Request) => {
       case 'symbols-by-group':
         return await getSymbolsByGroup(url);
       case 'price-board':
-        return await getPriceBoard(req);
+        return await getPriceBoard(body?.symbols);
       case 'indices':
         return await getMarketIndices();
       default:
@@ -93,7 +105,7 @@ serve(async (req: Request) => {
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     console.error('[VN-Stock] Error:', errorMessage);
-    
+
     // Return empty data with error flag instead of 500 for graceful degradation
     return new Response(
       JSON.stringify({ data: [], error: errorMessage, unavailable: true }),
@@ -226,16 +238,11 @@ async function getSymbolsByGroup(url: URL) {
 }
 
 // Get real-time price board using OHLC API (same as indices but for stocks)
-async function getPriceBoard(req: Request) {
-  let symbols = ['VCB', 'VHM', 'VIC', 'HPG', 'FPT', 'MBB', 'MSN', 'VNM'];
-  
-  try {
-    const body = await req.json();
-    symbols = body.symbols || symbols;
-  } catch {
-    // Use default symbols if body parsing fails
-  }
-  
+async function getPriceBoard(symbolsInput?: string[]) {
+  const symbols = (Array.isArray(symbolsInput) && symbolsInput.length > 0)
+    ? symbolsInput
+    : ['VCB', 'VHM', 'VIC', 'HPG', 'FPT', 'MBB', 'MSN', 'VNM'];
+
   console.log(`[VN-Stock] Getting price board for: ${symbols.join(', ')}`);
 
   // Use OHLC API to get latest prices - more reliable than GraphQL

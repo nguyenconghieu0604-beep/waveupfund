@@ -1,7 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-const EDGE_FUNCTION_URL = `${SUPABASE_URL}/functions/v1/vn-stock-data`;
+import { supabase } from '@/integrations/supabase/client';
 
 export interface IndexData {
   symbol: string;
@@ -33,6 +31,8 @@ export interface PriceBoardData {
   ask: { price: number; volume: number }[];
 }
 
+type FnResult<T> = { data?: T; error?: string; unavailable?: boolean };
+
 // Hook for market indices with auto-refresh
 export function useMarketIndices(refreshInterval = 30000) {
   const [indices, setIndices] = useState<IndexData[]>([]);
@@ -42,13 +42,16 @@ export function useMarketIndices(refreshInterval = 30000) {
 
   const fetchIndices = useCallback(async () => {
     try {
-      const response = await fetch(`${EDGE_FUNCTION_URL}?action=indices`);
-      if (!response.ok) throw new Error('Failed to fetch indices');
-      
-      const result = await response.json();
-      setIndices(result.data || []);
+      const { data, error: fnError } = await supabase.functions.invoke<FnResult<IndexData[]>>('vn-stock-data', {
+        body: { action: 'indices' },
+      });
+
+      if (fnError) throw fnError;
+      if (!data) throw new Error('Empty response');
+
+      setIndices(data.data || []);
       setLastUpdate(new Date());
-      setError(null);
+      setError(data.unavailable ? (data.error || 'Data unavailable') : null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
@@ -74,20 +77,18 @@ export function usePriceBoardRealtime(symbols: string[], refreshInterval = 10000
 
   const fetchPrices = useCallback(async () => {
     if (symbols.length === 0) return;
-    
+
     try {
-      const response = await fetch(`${EDGE_FUNCTION_URL}?action=price-board`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbols })
+      const { data, error: fnError } = await supabase.functions.invoke<FnResult<PriceBoardData[]>>('vn-stock-data', {
+        body: { action: 'price-board', symbols },
       });
-      
-      if (!response.ok) throw new Error('Failed to fetch prices');
-      
-      const result = await response.json();
-      setPrices(result.data || []);
+
+      if (fnError) throw fnError;
+      if (!data) throw new Error('Empty response');
+
+      setPrices(data.data || []);
       setLastUpdate(new Date());
-      setError(null);
+      setError(data.unavailable ? (data.error || 'Data unavailable') : null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
@@ -111,14 +112,14 @@ export function isMarketOpen(): boolean {
   const hours = vnTime.getHours();
   const minutes = vnTime.getMinutes();
   const day = vnTime.getDay();
-  
+
   // Weekend
   if (day === 0 || day === 6) return false;
-  
+
   const timeInMinutes = hours * 60 + minutes;
-  
+
   // Morning session: 9:00-11:30 (540-690)
   // Afternoon session: 13:00-15:00 (780-900)
-  return (timeInMinutes >= 540 && timeInMinutes <= 690) || 
-         (timeInMinutes >= 780 && timeInMinutes <= 900);
+  return (timeInMinutes >= 540 && timeInMinutes <= 690) ||
+    (timeInMinutes >= 780 && timeInMinutes <= 900);
 }
