@@ -28,6 +28,40 @@ const vciHeaders = {
   'Referer': 'https://trading.vietcap.com.vn/'
 };
 
+// Helper function to fetch with retry
+async function fetchWithRetry(url: string, options: RequestInit, maxRetries = 3): Promise<Response> {
+  let lastError: Error | null = null;
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`[VN-Stock] Fetch attempt ${attempt}/${maxRetries}: ${url}`);
+      const response = await fetch(url, options);
+      
+      if (response.ok) {
+        return response;
+      }
+      
+      // If server error (5xx), retry
+      if (response.status >= 500 && attempt < maxRetries) {
+        console.log(`[VN-Stock] Server error ${response.status}, retrying in ${attempt * 500}ms...`);
+        await new Promise(resolve => setTimeout(resolve, attempt * 500));
+        continue;
+      }
+      
+      throw new Error(`VCI API error: ${response.status}`);
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      console.error(`[VN-Stock] Attempt ${attempt} failed:`, lastError.message);
+      
+      if (attempt < maxRetries) {
+        await new Promise(resolve => setTimeout(resolve, attempt * 500));
+      }
+    }
+  }
+  
+  throw lastError || new Error('Failed after all retries');
+}
+
 serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -59,9 +93,11 @@ serve(async (req: Request) => {
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     console.error('[VN-Stock] Error:', errorMessage);
+    
+    // Return empty data with error flag instead of 500 for graceful degradation
     return new Response(
-      JSON.stringify({ error: errorMessage }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      JSON.stringify({ data: [], error: errorMessage, unavailable: true }),
+      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }
 });
@@ -100,15 +136,11 @@ async function getStockHistory(url: URL) {
 
   console.log(`[VN-Stock] Request payload:`, JSON.stringify(payload));
 
-  const response = await fetch(`${VCI_TRADING_URL}chart/OHLCChart/gap-chart`, {
+  const response = await fetchWithRetry(`${VCI_TRADING_URL}chart/OHLCChart/gap-chart`, {
     method: 'POST',
     headers: vciHeaders,
     body: JSON.stringify(payload)
   });
-
-  if (!response.ok) {
-    throw new Error(`VCI API error: ${response.status}`);
-  }
 
   const data = await response.json();
   const ohlcv: any[] = [];
@@ -144,14 +176,10 @@ async function getStockHistory(url: URL) {
 async function getAllSymbols() {
   console.log('[VN-Stock] Getting all symbols');
 
-  const response = await fetch(`${VCI_TRADING_URL}price/symbols/getAll`, {
+  const response = await fetchWithRetry(`${VCI_TRADING_URL}price/symbols/getAll`, {
     method: 'GET',
     headers: vciHeaders
   });
-
-  if (!response.ok) {
-    throw new Error(`VCI API error: ${response.status}`);
-  }
 
   const data = await response.json();
   console.log(`[VN-Stock] Got ${data.length} symbols`);
@@ -175,14 +203,10 @@ async function getSymbolsByGroup(url: URL) {
   const group = url.searchParams.get('group') || 'VN30';
   console.log(`[VN-Stock] Getting symbols for group: ${group}`);
 
-  const response = await fetch(`${VCI_TRADING_URL}price/symbols/getByGroup?group=${group}`, {
+  const response = await fetchWithRetry(`${VCI_TRADING_URL}price/symbols/getByGroup?group=${group}`, {
     method: 'GET',
     headers: vciHeaders
   });
-
-  if (!response.ok) {
-    throw new Error(`VCI API error: ${response.status}`);
-  }
 
   const data = await response.json();
   console.log(`[VN-Stock] Got ${data.length} symbols for ${group}`);
@@ -222,15 +246,11 @@ async function getPriceBoard(req: Request) {
     countBack: 2
   };
 
-  const response = await fetch(`${VCI_TRADING_URL}chart/OHLCChart/gap-chart`, {
+  const response = await fetchWithRetry(`${VCI_TRADING_URL}chart/OHLCChart/gap-chart`, {
     method: 'POST',
     headers: vciHeaders,
     body: JSON.stringify(payload)
   });
-
-  if (!response.ok) {
-    throw new Error(`VCI API error: ${response.status}`);
-  }
 
   const data = await response.json();
   console.log(`[VN-Stock] Got OHLC data for ${data.length} stocks`);
@@ -286,15 +306,11 @@ async function getMarketIndices() {
     countBack: 2
   };
 
-  const response = await fetch(`${VCI_TRADING_URL}chart/OHLCChart/gap-chart`, {
+  const response = await fetchWithRetry(`${VCI_TRADING_URL}chart/OHLCChart/gap-chart`, {
     method: 'POST',
     headers: vciHeaders,
     body: JSON.stringify(payload)
   });
-
-  if (!response.ok) {
-    throw new Error(`VCI API error: ${response.status}`);
-  }
 
   const data = await response.json();
   console.log(`[VN-Stock] Raw index data:`, JSON.stringify(data[0]?.c?.slice(-2)));
