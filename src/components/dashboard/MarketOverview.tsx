@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import { 
   TrendingUp, TrendingDown, Activity, ArrowUpRight, ArrowDownRight,
@@ -7,6 +7,7 @@ import {
 import { cn } from '@/lib/utils';
 import type { Language } from '@/types';
 import { translations } from '@/lib/translations';
+import CandlestickChart from '@/components/charts/CandlestickChart';
 
 interface MarketCardProps {
   symbol: string;
@@ -139,6 +140,7 @@ interface MarketOverviewProps {
 const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
   const t = translations[lang];
   const isVi = lang === 'vi';
+  const [selectedSymbol, setSelectedSymbol] = useState('VCB');
 
   // Vietnamese stock market data - December 26, 2025
   const marketData = [
@@ -248,6 +250,42 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
           ))}
         </div>
       </div>
+
+      {/* Advanced Candlestick Chart */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.35 }}
+      >
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-display text-xl font-semibold text-foreground">
+            {isVi ? 'Biểu đồ kỹ thuật' : 'Advanced Chart'}
+          </h3>
+          <div className="flex gap-2">
+            {['VCB', 'FPT', 'VHM', 'HPG'].map((sym) => (
+              <button
+                key={sym}
+                onClick={() => setSelectedSymbol(sym)}
+                className={cn(
+                  "px-3 py-1 rounded-lg text-sm font-medium transition-colors",
+                  selectedSymbol === sym 
+                    ? "bg-primary text-primary-foreground" 
+                    : "bg-muted/50 text-muted-foreground hover:bg-muted"
+                )}
+              >
+                {sym}
+              </button>
+            ))}
+          </div>
+        </div>
+        <CandlestickChart 
+          symbol={selectedSymbol} 
+          lang={lang} 
+          height={450}
+          autoRefresh={true}
+          refreshInterval={30}
+        />
+      </motion.div>
 
       {/* Sector Overview */}
       <motion.div
