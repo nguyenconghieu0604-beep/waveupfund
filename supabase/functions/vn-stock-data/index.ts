@@ -36,7 +36,18 @@ serve(async (req: Request) => {
 
   try {
     const url = new URL(req.url);
-    const action = url.searchParams.get('action');
+    let action = url.searchParams.get('action');
+    
+    // Fallback: check body for action if not in query params
+    if (!action && req.method === 'POST') {
+      try {
+        const clonedReq = req.clone();
+        const body = await clonedReq.json();
+        action = body.action || null;
+      } catch {
+        // Body parsing failed, action stays null
+      }
+    }
 
     console.log(`[VN-Stock] Action: ${action}`);
 
@@ -48,7 +59,7 @@ serve(async (req: Request) => {
       case 'symbols-by-group':
         return await getSymbolsByGroup(url);
       case 'price-board':
-        return await getPriceBoard(req);
+        return await getPriceBoard(req, url);
       case 'indices':
         return await getMarketIndices();
       default:
@@ -209,10 +220,21 @@ async function getSymbolsByGroup(url: URL) {
 }
 
 // Get real-time price board
-async function getPriceBoard(req: Request) {
-  const body = await req.json();
-  const symbols = body.symbols || ['VCB', 'VHM', 'VIC', 'HPG', 'FPT'];
+async function getPriceBoard(req: Request, url: URL) {
+  // Try to get symbols from query params first, then from body
+  let symbols: string[] = [];
   
+  const symbolsParam = url.searchParams.get('symbols');
+  if (symbolsParam) {
+    symbols = symbolsParam.split(',');
+  } else {
+    try {
+      const body = await req.json();
+      symbols = body.symbols || ['VCB', 'VHM', 'VIC', 'HPG', 'FPT'];
+    } catch {
+      symbols = ['VCB', 'VHM', 'VIC', 'HPG', 'FPT'];
+    }
+  }
   console.log(`[VN-Stock] Getting price board for: ${symbols.join(', ')}`);
 
   const payload = {
