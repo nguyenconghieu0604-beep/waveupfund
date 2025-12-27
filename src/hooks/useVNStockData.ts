@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { supabase } from '@/integrations/supabase/client';
 
 export interface OHLCVData {
   time: number;
@@ -44,6 +45,8 @@ export interface IndexData {
   volume: number;
 }
 
+type ApiResult<T> = { data?: T; symbol?: string; group?: string; error?: string; unavailable?: boolean };
+
 export function useStockHistory(symbol: string, start: string, end?: string, interval: string = '1D') {
   const [data, setData] = useState<OHLCVData[]>([]);
   const [loading, setLoading] = useState(false);
@@ -51,32 +54,20 @@ export function useStockHistory(symbol: string, start: string, end?: string, int
 
   const fetchHistory = useCallback(async () => {
     if (!symbol) return;
-    
+
     setLoading(true);
     setError(null);
 
     try {
       const endDate = end || new Date().toISOString().split('T')[0];
-      const projectUrl = import.meta.env.VITE_SUPABASE_URL;
-      
-      const res = await fetch(
-        `${projectUrl}/functions/v1/vn-stock-data?action=history&symbol=${symbol}&start=${start}&end=${endDate}&interval=${interval}`,
-        {
-          headers: {
-            'Content-Type': 'application/json',
-          }
-        }
-      );
 
-      if (!res.ok) {
-        throw new Error(`API error: ${res.status}`);
-      }
+      const { data: result, error: fnError } = await supabase.functions.invoke<ApiResult<OHLCVData[]>>('vn-stock-data', {
+        body: { action: 'history', symbol, start, end: endDate, interval },
+      });
 
-      const result = await res.json();
-      
-      if (result.error) {
-        throw new Error(result.error);
-      }
+      if (fnError) throw fnError;
+      if (!result) throw new Error('Empty response');
+      if (result.error) throw new Error(result.error);
 
       console.log('[useStockHistory] Got data:', result.data?.length, 'candles');
       setData(result.data || []);
@@ -107,21 +98,15 @@ export function useSymbols(group?: string) {
       setError(null);
 
       try {
-        const projectUrl = import.meta.env.VITE_SUPABASE_URL;
         const action = group ? 'symbols-by-group' : 'symbols';
-        const url = group 
-          ? `${projectUrl}/functions/v1/vn-stock-data?action=${action}&group=${group}`
-          : `${projectUrl}/functions/v1/vn-stock-data?action=${action}`;
 
-        const res = await fetch(url, {
-          headers: { 'Content-Type': 'application/json' }
+        const { data: result, error: fnError } = await supabase.functions.invoke<ApiResult<StockSymbol[]>>('vn-stock-data', {
+          body: { action, group },
         });
 
-        if (!res.ok) {
-          throw new Error(`API error: ${res.status}`);
-        }
+        if (fnError) throw fnError;
+        if (!result) throw new Error('Empty response');
 
-        const result = await res.json();
         setSymbols(result.data || []);
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : 'Failed to fetch symbols';
@@ -150,18 +135,13 @@ export function usePriceBoard(symbols: string[]) {
     setError(null);
 
     try {
-      const projectUrl = import.meta.env.VITE_SUPABASE_URL;
-      const res = await fetch(`${projectUrl}/functions/v1/vn-stock-data?action=price-board`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbols })
+      const { data: result, error: fnError } = await supabase.functions.invoke<ApiResult<PriceData[]>>('vn-stock-data', {
+        body: { action: 'price-board', symbols },
       });
 
-      if (!res.ok) {
-        throw new Error(`API error: ${res.status}`);
-      }
+      if (fnError) throw fnError;
+      if (!result) throw new Error('Empty response');
 
-      const result = await res.json();
       setPrices(result.data || []);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to fetch prices';
@@ -174,7 +154,7 @@ export function usePriceBoard(symbols: string[]) {
 
   useEffect(() => {
     fetchPrices();
-    
+
     // Auto refresh every 10 seconds during market hours
     const interval = setInterval(fetchPrices, 10000);
     return () => clearInterval(interval);
@@ -194,16 +174,13 @@ export function useMarketIndices() {
       setError(null);
 
       try {
-        const projectUrl = import.meta.env.VITE_SUPABASE_URL;
-        const res = await fetch(`${projectUrl}/functions/v1/vn-stock-data?action=indices`, {
-          headers: { 'Content-Type': 'application/json' }
+        const { data: result, error: fnError } = await supabase.functions.invoke<ApiResult<IndexData[]>>('vn-stock-data', {
+          body: { action: 'indices' },
         });
 
-        if (!res.ok) {
-          throw new Error(`API error: ${res.status}`);
-        }
+        if (fnError) throw fnError;
+        if (!result) throw new Error('Empty response');
 
-        const result = await res.json();
         setIndices(result.data || []);
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : 'Failed to fetch indices';
@@ -215,7 +192,7 @@ export function useMarketIndices() {
     };
 
     fetchIndices();
-    
+
     // Auto refresh every 30 seconds
     const interval = setInterval(fetchIndices, 30000);
     return () => clearInterval(interval);
