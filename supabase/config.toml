@@ -1,1 +1,4 @@
 project_id = "qclufpgnyreollrtppdj"
+
+[functions.vn-stock-data]
+verify_jwt = false
