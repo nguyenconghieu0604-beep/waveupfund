@@ -6,8 +6,8 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// VCI Trading API - Based on vnstock library
 const VCI_TRADING_URL = 'https://trading.vietcap.com.vn/api/';
+const VCI_GRAPHQL_URL = 'https://trading.vietcap.com.vn/data-mt/graphql';
 
 const INTERVAL_MAP: Record<string, string> = {
   '1m': 'ONE_MINUTE',
@@ -28,76 +28,30 @@ const vciHeaders = {
   'Referer': 'https://trading.vietcap.com.vn/'
 };
 
-// Helper function to fetch with retry
-async function fetchWithRetry(url: string, options: RequestInit, maxRetries = 3): Promise<Response> {
-  let lastError: Error | null = null;
-  
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      console.log(`[VN-Stock] Fetch attempt ${attempt}/${maxRetries}: ${url}`);
-      const response = await fetch(url, options);
-      
-      if (response.ok) {
-        return response;
-      }
-      
-      // If server error (5xx), retry
-      if (response.status >= 500 && attempt < maxRetries) {
-        console.log(`[VN-Stock] Server error ${response.status}, retrying in ${attempt * 500}ms...`);
-        await new Promise(resolve => setTimeout(resolve, attempt * 500));
-        continue;
-      }
-      
-      throw new Error(`VCI API error: ${response.status}`);
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
-      console.error(`[VN-Stock] Attempt ${attempt} failed:`, lastError.message);
-      
-      if (attempt < maxRetries) {
-        await new Promise(resolve => setTimeout(resolve, attempt * 500));
-      }
-    }
-  }
-  
-  throw lastError || new Error('Failed after all retries');
-}
-
 serve(async (req: Request) => {
+  // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
     const url = new URL(req.url);
-
-    // Support both querystring (?action=...) and JSON body { action: ... }
-    let body: any = null;
-    try {
-      const ct = req.headers.get('content-type') || '';
-      if (ct.includes('application/json')) {
-        body = await req.clone().json();
-      }
-    } catch {
-      body = null;
-    }
-
-    const action = url.searchParams.get('action') ?? body?.action;
+    const action = url.searchParams.get('action');
 
     console.log(`[VN-Stock] Action: ${action}`);
 
     switch (action) {
       case 'history':
-        return await getStockHistory(url, body);
+        return await getStockHistory(url);
       case 'symbols':
         return await getAllSymbols();
       case 'symbols-by-group':
-        return await getSymbolsByGroup(url, body);
+        return await getSymbolsByGroup(url);
       case 'price-board':
-        return await getPriceBoard(body?.symbols);
+        return await getPriceBoard(req);
       case 'indices':
         return await getMarketIndices();
       default:
-        console.log(`[VN-Stock] Invalid action received: ${action}, body:`, body);
         return new Response(
           JSON.stringify({ error: 'Invalid action. Use: history, symbols, symbols-by-group, price-board, indices' }),
           { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -106,21 +60,19 @@ serve(async (req: Request) => {
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     console.error('[VN-Stock] Error:', errorMessage);
-
-    // Return empty data with error flag instead of 500 for graceful degradation
     return new Response(
-      JSON.stringify({ data: [], error: errorMessage, unavailable: true }),
-      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      JSON.stringify({ error: errorMessage }),
+      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }
 });
 
-// Get stock OHLCV history - Based on vnstock quote.history()
-async function getStockHistory(url: URL, body?: any) {
-  const symbol = url.searchParams.get('symbol') || body?.symbol || 'VCB';
-  const start = url.searchParams.get('start') || body?.start || '2024-01-01';
-  const end = url.searchParams.get('end') || body?.end || new Date().toISOString().split('T')[0];
-  const interval = url.searchParams.get('interval') || body?.interval || '1D';
+// Get stock OHLCV history
+async function getStockHistory(url: URL) {
+  const symbol = url.searchParams.get('symbol') || 'VCB';
+  const start = url.searchParams.get('start') || '2024-01-01';
+  const end = url.searchParams.get('end') || new Date().toISOString().split('T')[0];
+  const interval = url.searchParams.get('interval') || '1D';
 
   console.log(`[VN-Stock] Getting history for ${symbol} from ${start} to ${end}, interval: ${interval}`);
 
@@ -131,8 +83,9 @@ async function getStockHistory(url: URL, body?: any) {
   const endStamp = Math.floor(endDate.getTime() / 1000);
   const intervalValue = INTERVAL_MAP[interval] || 'ONE_DAY';
 
+  // Calculate count_back based on business days
   const diffDays = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
-  let countBack = Math.ceil(diffDays * 1.5);
+  let countBack = Math.ceil(diffDays * 1.5); // Approximate with buffer
 
   if (intervalValue === 'ONE_HOUR') {
     countBack = Math.ceil(diffDays * 7);
@@ -149,24 +102,32 @@ async function getStockHistory(url: URL, body?: any) {
 
   console.log(`[VN-Stock] Request payload:`, JSON.stringify(payload));
 
-  const response = await fetchWithRetry(`${VCI_TRADING_URL}chart/OHLCChart/gap-chart`, {
+  const response = await fetch(`${VCI_TRADING_URL}chart/OHLCChart/gap-chart`, {
     method: 'POST',
     headers: vciHeaders,
     body: JSON.stringify(payload)
   });
 
+  if (!response.ok) {
+    throw new Error(`VCI API error: ${response.status}`);
+  }
+
   const data = await response.json();
+  console.log(`[VN-Stock] Raw response type:`, typeof data);
+
+  // Transform VCI format to standard OHLCV
   const ohlcv: any[] = [];
   
   if (Array.isArray(data) && data.length > 0) {
     const symbolData = data[0];
     if (symbolData && symbolData.o && Array.isArray(symbolData.o)) {
+      // VCI returns arrays for each field
       for (let i = 0; i < symbolData.t.length; i++) {
-        const timestamp = symbolData.t[i] * 1000;
+        const timestamp = symbolData.t[i] * 1000; // Convert to milliseconds
         if (timestamp >= startDate.getTime() && timestamp <= endDate.getTime()) {
           ohlcv.push({
-            time: symbolData.t[i],
-            open: symbolData.o[i] / 1000,
+            time: symbolData.t[i], // Keep as seconds for lightweight-charts
+            open: symbolData.o[i] / 1000, // VCI returns in VND * 1000
             high: symbolData.h[i] / 1000,
             low: symbolData.l[i] / 1000,
             close: symbolData.c[i] / 1000,
@@ -189,14 +150,19 @@ async function getStockHistory(url: URL, body?: any) {
 async function getAllSymbols() {
   console.log('[VN-Stock] Getting all symbols');
 
-  const response = await fetchWithRetry(`${VCI_TRADING_URL}price/symbols/getAll`, {
+  const response = await fetch(`${VCI_TRADING_URL}price/symbols/getAll`, {
     method: 'GET',
     headers: vciHeaders
   });
 
+  if (!response.ok) {
+    throw new Error(`VCI API error: ${response.status}`);
+  }
+
   const data = await response.json();
   console.log(`[VN-Stock] Got ${data.length} symbols`);
 
+  // Transform to simpler format
   const symbols = data.map((item: any) => ({
     symbol: item.symbol,
     name: item.organName || item.enOrganName,
@@ -212,14 +178,18 @@ async function getAllSymbols() {
 }
 
 // Get symbols by group (VN30, HOSE, HNX, etc.)
-async function getSymbolsByGroup(url: URL, body?: any) {
-  const group = url.searchParams.get('group') || body?.group || 'VN30';
+async function getSymbolsByGroup(url: URL) {
+  const group = url.searchParams.get('group') || 'VN30';
   console.log(`[VN-Stock] Getting symbols for group: ${group}`);
 
-  const response = await fetchWithRetry(`${VCI_TRADING_URL}price/symbols/getByGroup?group=${group}`, {
+  const response = await fetch(`${VCI_TRADING_URL}price/symbols/getByGroup?group=${group}`, {
     method: 'GET',
     headers: vciHeaders
   });
+
+  if (!response.ok) {
+    throw new Error(`VCI API error: ${response.status}`);
+  }
 
   const data = await response.json();
   console.log(`[VN-Stock] Got ${data.length} symbols for ${group}`);
@@ -238,61 +208,98 @@ async function getSymbolsByGroup(url: URL, body?: any) {
   );
 }
 
-// Get real-time price board using OHLC API (same as indices but for stocks)
-async function getPriceBoard(symbolsInput?: string[]) {
-  const symbols = (Array.isArray(symbolsInput) && symbolsInput.length > 0)
-    ? symbolsInput
-    : ['VCB', 'VHM', 'VIC', 'HPG', 'FPT', 'MBB', 'MSN', 'VNM'];
-
+// Get real-time price board
+async function getPriceBoard(req: Request) {
+  const body = await req.json();
+  const symbols = body.symbols || ['VCB', 'VHM', 'VIC', 'HPG', 'FPT'];
+  
   console.log(`[VN-Stock] Getting price board for: ${symbols.join(', ')}`);
 
-  // Use OHLC API to get latest prices - more reliable than GraphQL
   const payload = {
-    timeFrame: 'ONE_DAY',
-    symbols: symbols.map(s => s.toUpperCase()),
-    to: Math.floor(Date.now() / 1000),
-    countBack: 2
+    query: `{
+      MarketPriceBoard(codes: ${JSON.stringify(symbols)}) {
+        stockNo
+        ceiling
+        floor
+        refPrice
+        stockSymbol
+        matchedPrice
+        matchedVolume
+        matchedBy
+        priceChange
+        priceChangePercent
+        highPrice
+        lowPrice
+        foreignBuyVolume
+        foreignSellVolume
+        totalRoom
+        currentRoom
+        openPrice
+        accumulatedVolume
+        accumulatedValue
+        buyForeignQuantity
+        sellForeignQuantity
+        matchedValue
+        buyPrice1
+        buyVolume1
+        buyPrice2
+        buyVolume2
+        buyPrice3
+        buyVolume3
+        sellPrice1
+        sellVolume1
+        sellPrice2
+        sellVolume2
+        sellPrice3
+        sellVolume3
+        __typename
+      }
+    }`,
+    variables: {}
   };
 
-  const response = await fetchWithRetry(`${VCI_TRADING_URL}chart/OHLCChart/gap-chart`, {
+  const response = await fetch(VCI_GRAPHQL_URL, {
     method: 'POST',
     headers: vciHeaders,
     body: JSON.stringify(payload)
   });
 
-  const data = await response.json();
-  console.log(`[VN-Stock] Got OHLC data for ${data.length} stocks`);
+  if (!response.ok) {
+    throw new Error(`VCI GraphQL error: ${response.status}`);
+  }
 
-  const transformed = data.map((item: any, index: number) => {
-    const len = item.c?.length || 0;
-    const currentPrice = len > 0 ? item.c[len - 1] / 1000 : 0;
-    const prevPrice = len > 1 ? item.c[len - 2] / 1000 : currentPrice;
-    const openPrice = len > 0 ? item.o[len - 1] / 1000 : 0;
-    const highPrice = len > 0 ? item.h[len - 1] / 1000 : 0;
-    const lowPrice = len > 0 ? item.l[len - 1] / 1000 : 0;
-    const volume = len > 0 ? item.v[len - 1] : 0;
-    const change = currentPrice - prevPrice;
-    const changePercent = prevPrice > 0 ? (change / prevPrice) * 100 : 0;
+  const result = await response.json();
+  const priceData = result.data?.MarketPriceBoard || [];
 
-    return {
-      symbol: symbols[index],
-      price: currentPrice,
-      change: change,
-      changePercent: changePercent,
-      open: openPrice,
-      high: highPrice,
-      low: lowPrice,
-      volume: volume,
-      ref: prevPrice,
-      ceiling: prevPrice * 1.07, // Vietnam stock ceiling is +7%
-      floor: prevPrice * 0.93,   // Vietnam stock floor is -7%
-      value: currentPrice * volume * 1000,
-      foreignBuy: 0,
-      foreignSell: 0,
-      bid: [],
-      ask: []
-    };
-  });
+  console.log(`[VN-Stock] Got price data for ${priceData.length} stocks`);
+
+  // Transform to cleaner format
+  const transformed = priceData.map((item: any) => ({
+    symbol: item.stockSymbol,
+    price: item.matchedPrice / 1000,
+    change: item.priceChange / 1000,
+    changePercent: item.priceChangePercent,
+    ceiling: item.ceiling / 1000,
+    floor: item.floor / 1000,
+    ref: item.refPrice / 1000,
+    open: item.openPrice / 1000,
+    high: item.highPrice / 1000,
+    low: item.lowPrice / 1000,
+    volume: item.accumulatedVolume,
+    value: item.accumulatedValue,
+    foreignBuy: item.foreignBuyVolume,
+    foreignSell: item.foreignSellVolume,
+    bid: [
+      { price: item.buyPrice1 / 1000, volume: item.buyVolume1 },
+      { price: item.buyPrice2 / 1000, volume: item.buyVolume2 },
+      { price: item.buyPrice3 / 1000, volume: item.buyVolume3 }
+    ],
+    ask: [
+      { price: item.sellPrice1 / 1000, volume: item.sellVolume1 },
+      { price: item.sellPrice2 / 1000, volume: item.sellVolume2 },
+      { price: item.sellPrice3 / 1000, volume: item.sellVolume3 }
+    ]
+  }));
 
   return new Response(
     JSON.stringify({ data: transformed }),
@@ -300,12 +307,12 @@ async function getPriceBoard(symbolsInput?: string[]) {
   );
 }
 
-// Get market indices (VN-INDEX, HNX-INDEX, VN30, etc.)
+// Get market indices (VN-INDEX, HNX-INDEX, etc.)
 async function getMarketIndices() {
   console.log('[VN-Stock] Getting market indices');
 
-  // Based on vnstock - supported indices: VNINDEX, HNXINDEX, UPCOMINDEX, VN30, HNX30
-  const indexSymbols = ['VNINDEX', 'VN30', 'HNXINDEX', 'UPCOMINDEX'];
+  // VCI uses special symbols for indices
+  const indexSymbols = ['VNINDEX', 'VN30', 'HNX', 'HNXINDEX', 'UPCOM'];
 
   const payload = {
     timeFrame: 'ONE_DAY',
@@ -314,64 +321,35 @@ async function getMarketIndices() {
     countBack: 2
   };
 
-  const response = await fetchWithRetry(`${VCI_TRADING_URL}chart/OHLCChart/gap-chart`, {
+  const response = await fetch(`${VCI_TRADING_URL}chart/OHLCChart/gap-chart`, {
     method: 'POST',
     headers: vciHeaders,
     body: JSON.stringify(payload)
   });
 
+  if (!response.ok) {
+    throw new Error(`VCI API error: ${response.status}`);
+  }
+
   const data = await response.json();
-  console.log(`[VN-Stock] Raw index response count:`, data.length);
 
-  // Create a map from symbol to data for correct matching
-  // VCI API returns 'sym' field in each item containing the symbol name
-  const dataMap = new Map<string, any>();
-  data.forEach((item: any) => {
-    if (item.sym) {
-      dataMap.set(item.sym.toUpperCase(), item);
-      console.log(`[VN-Stock] Index item sym: ${item.sym}, prices: ${item.c?.slice(-2)}`);
-    }
-  });
-
-  // Build response in the exact order we want, using symbol from response
-  const indices = indexSymbols.map((symbol) => {
-    const item = dataMap.get(symbol);
-    if (!item) {
-      console.log(`[VN-Stock] No data for index: ${symbol}`);
-      return {
-        symbol,
-        price: 0,
-        change: 0,
-        changePercent: '0.00',
-        volume: 0,
-        open: 0,
-        high: 0,
-        low: 0
-      };
-    }
-
+  const indices = data.map((item: any, index: number) => {
     const len = item.c?.length || 0;
-
-    // NOTE: With vnstock/VCI, index values are already in points (e.g. 1729.80),
-    // unlike stock prices which are scaled. So we DO NOT divide by 1000 here.
-    const currentPrice = len > 0 ? Number(item.c[len - 1]) : 0;
-    const prevPrice = len > 1 ? Number(item.c[len - 2]) : currentPrice;
+    const currentPrice = len > 0 ? item.c[len - 1] / 1000 : 0;
+    const prevPrice = len > 1 ? item.c[len - 2] / 1000 : currentPrice;
     const change = currentPrice - prevPrice;
     const changePercent = prevPrice > 0 ? (change / prevPrice) * 100 : 0;
 
     return {
-      symbol,
+      symbol: indexSymbols[index],
       price: currentPrice,
       change: change,
       changePercent: changePercent.toFixed(2),
-      volume: len > 0 ? item.v[len - 1] : 0,
-      open: len > 0 ? Number(item.o[len - 1]) : 0,
-      high: len > 0 ? Number(item.h[len - 1]) : 0,
-      low: len > 0 ? Number(item.l[len - 1]) : 0
+      volume: len > 0 ? item.v[len - 1] : 0
     };
   });
 
-  console.log(`[VN-Stock] Processed indices:`, JSON.stringify(indices.map((i: any) => ({ s: i.symbol, p: i.price }))));
+  console.log(`[VN-Stock] Got ${indices.length} indices`);
 
   return new Response(
     JSON.stringify({ data: indices }),
