@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { createChart, ColorType, CandlestickSeries, HistogramSeries } from 'lightweight-charts';
+import { createChart, ColorType, CandlestickSeries, HistogramSeries, ISeriesApi } from 'lightweight-charts';
 import { useStockHistory } from '@/hooks/useVNStockData';
 import { cn } from '@/lib/utils';
 import { Loader2, RefreshCw } from 'lucide-react';
@@ -22,8 +22,8 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({
 }) => {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
-  const candleSeriesRef = useRef<ReturnType<typeof CandlestickSeries.prototype.api> | null>(null);
-  const volumeSeriesRef = useRef<ReturnType<typeof HistogramSeries.prototype.api> | null>(null);
+  const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
+  const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
   
   const [selectedInterval, setSelectedInterval] = useState(interval);
   
@@ -122,7 +122,7 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({
     if (data.length === 0 || !candleSeriesRef.current || !volumeSeriesRef.current) return;
 
     const candleData = data.map((d) => ({
-      time: d.time as number,
+      time: d.time as unknown as import('lightweight-charts').Time,
       open: d.open,
       high: d.high,
       low: d.low,
@@ -130,7 +130,7 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({
     }));
 
     const volumeData = data.map((d) => ({
-      time: d.time as number,
+      time: d.time as unknown as import('lightweight-charts').Time,
       value: d.volume,
       color: d.close >= d.open ? 'rgba(34, 197, 94, 0.5)' : 'rgba(239, 68, 68, 0.5)',
     }));
