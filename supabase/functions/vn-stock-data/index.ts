@@ -6,6 +6,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+// VCI Trading API - Based on vnstock library documentation
 const VCI_TRADING_URL = 'https://trading.vietcap.com.vn/api/';
 const VCI_GRAPHQL_URL = 'https://trading.vietcap.com.vn/data-mt/graphql';
 
@@ -29,7 +30,6 @@ const vciHeaders = {
 };
 
 serve(async (req: Request) => {
-  // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
@@ -43,6 +43,8 @@ serve(async (req: Request) => {
     switch (action) {
       case 'history':
         return await getStockHistory(url);
+      case 'intraday':
+        return await getIntraday(url);
       case 'symbols':
         return await getAllSymbols();
       case 'symbols-by-group':
@@ -53,7 +55,7 @@ serve(async (req: Request) => {
         return await getMarketIndices();
       default:
         return new Response(
-          JSON.stringify({ error: 'Invalid action. Use: history, symbols, symbols-by-group, price-board, indices' }),
+          JSON.stringify({ error: 'Invalid action. Use: history, intraday, symbols, symbols-by-group, price-board, indices' }),
           { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
     }
@@ -67,7 +69,7 @@ serve(async (req: Request) => {
   }
 });
 
-// Get stock OHLCV history
+// Get stock OHLCV history - Based on vnstock quote.history()
 async function getStockHistory(url: URL) {
   const symbol = url.searchParams.get('symbol') || 'VCB';
   const start = url.searchParams.get('start') || '2024-01-01';
@@ -83,9 +85,8 @@ async function getStockHistory(url: URL) {
   const endStamp = Math.floor(endDate.getTime() / 1000);
   const intervalValue = INTERVAL_MAP[interval] || 'ONE_DAY';
 
-  // Calculate count_back based on business days
   const diffDays = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
-  let countBack = Math.ceil(diffDays * 1.5); // Approximate with buffer
+  let countBack = Math.ceil(diffDays * 1.5);
 
   if (intervalValue === 'ONE_HOUR') {
     countBack = Math.ceil(diffDays * 7);
@@ -113,21 +114,17 @@ async function getStockHistory(url: URL) {
   }
 
   const data = await response.json();
-  console.log(`[VN-Stock] Raw response type:`, typeof data);
-
-  // Transform VCI format to standard OHLCV
   const ohlcv: any[] = [];
   
   if (Array.isArray(data) && data.length > 0) {
     const symbolData = data[0];
     if (symbolData && symbolData.o && Array.isArray(symbolData.o)) {
-      // VCI returns arrays for each field
       for (let i = 0; i < symbolData.t.length; i++) {
-        const timestamp = symbolData.t[i] * 1000; // Convert to milliseconds
+        const timestamp = symbolData.t[i] * 1000;
         if (timestamp >= startDate.getTime() && timestamp <= endDate.getTime()) {
           ohlcv.push({
-            time: symbolData.t[i], // Keep as seconds for lightweight-charts
-            open: symbolData.o[i] / 1000, // VCI returns in VND * 1000
+            time: symbolData.t[i],
+            open: symbolData.o[i] / 1000,
             high: symbolData.h[i] / 1000,
             low: symbolData.l[i] / 1000,
             close: symbolData.c[i] / 1000,
@@ -142,6 +139,56 @@ async function getStockHistory(url: URL) {
 
   return new Response(
     JSON.stringify({ symbol, data: ohlcv }),
+    { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+  );
+}
+
+// Get intraday data - Based on vnstock quote.intraday()
+async function getIntraday(url: URL) {
+  const symbol = url.searchParams.get('symbol') || 'VCB';
+  const pageSize = parseInt(url.searchParams.get('page_size') || '1000');
+
+  console.log(`[VN-Stock] Getting intraday for ${symbol}, page_size: ${pageSize}`);
+
+  const payload = {
+    query: `{
+      StockRealtimeByCode(stockCode: "${symbol.toUpperCase()}") {
+        stockSymbol
+        matchedPrice
+        matchedVolume
+        priceChange
+        priceChangePercent
+        highPrice
+        lowPrice
+        avgPrice
+        accumulatedVolume
+        accumulatedValue
+        buyForeignQuantity
+        sellForeignQuantity
+        time
+        __typename
+      }
+    }`,
+    variables: {}
+  };
+
+  const response = await fetch(VCI_GRAPHQL_URL, {
+    method: 'POST',
+    headers: vciHeaders,
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    throw new Error(`VCI GraphQL error: ${response.status}`);
+  }
+
+  const result = await response.json();
+  const stockData = result.data?.StockRealtimeByCode;
+
+  console.log(`[VN-Stock] Got intraday data for ${symbol}`);
+
+  return new Response(
+    JSON.stringify({ symbol, data: stockData }),
     { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
   );
 }
@@ -162,7 +209,6 @@ async function getAllSymbols() {
   const data = await response.json();
   console.log(`[VN-Stock] Got ${data.length} symbols`);
 
-  // Transform to simpler format
   const symbols = data.map((item: any) => ({
     symbol: item.symbol,
     name: item.organName || item.enOrganName,
@@ -208,10 +254,16 @@ async function getSymbolsByGroup(url: URL) {
   );
 }
 
-// Get real-time price board
+// Get real-time price board - Based on vnstock quote.price_board()
 async function getPriceBoard(req: Request) {
-  const body = await req.json();
-  const symbols = body.symbols || ['VCB', 'VHM', 'VIC', 'HPG', 'FPT'];
+  let symbols = ['VCB', 'VHM', 'VIC', 'HPG', 'FPT'];
+  
+  try {
+    const body = await req.json();
+    symbols = body.symbols || symbols;
+  } catch {
+    // Use default symbols if body parsing fails
+  }
   
   console.log(`[VN-Stock] Getting price board for: ${symbols.join(', ')}`);
 
@@ -273,7 +325,6 @@ async function getPriceBoard(req: Request) {
 
   console.log(`[VN-Stock] Got price data for ${priceData.length} stocks`);
 
-  // Transform to cleaner format
   const transformed = priceData.map((item: any) => ({
     symbol: item.stockSymbol,
     price: item.matchedPrice / 1000,
@@ -307,12 +358,12 @@ async function getPriceBoard(req: Request) {
   );
 }
 
-// Get market indices (VN-INDEX, HNX-INDEX, etc.)
+// Get market indices (VN-INDEX, HNX-INDEX, VN30, etc.)
 async function getMarketIndices() {
   console.log('[VN-Stock] Getting market indices');
 
-  // VCI uses special symbols for indices
-  const indexSymbols = ['VNINDEX', 'VN30', 'HNX', 'HNXINDEX', 'UPCOM'];
+  // Based on vnstock - supported indices: VNINDEX, HNXINDEX, UPCOMINDEX, VN30, HNX30
+  const indexSymbols = ['VNINDEX', 'VN30', 'HNXINDEX', 'UPCOMINDEX'];
 
   const payload = {
     timeFrame: 'ONE_DAY',
@@ -345,7 +396,10 @@ async function getMarketIndices() {
       price: currentPrice,
       change: change,
       changePercent: changePercent.toFixed(2),
-      volume: len > 0 ? item.v[len - 1] : 0
+      volume: len > 0 ? item.v[len - 1] : 0,
+      open: len > 0 ? item.o[len - 1] / 1000 : 0,
+      high: len > 0 ? item.h[len - 1] / 1000 : 0,
+      low: len > 0 ? item.l[len - 1] / 1000 : 0
     };
   });
 
