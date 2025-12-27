@@ -87,16 +87,17 @@ serve(async (req: Request) => {
 
     switch (action) {
       case 'history':
-        return await getStockHistory(url);
+        return await getStockHistory(url, body);
       case 'symbols':
         return await getAllSymbols();
       case 'symbols-by-group':
-        return await getSymbolsByGroup(url);
+        return await getSymbolsByGroup(url, body);
       case 'price-board':
         return await getPriceBoard(body?.symbols);
       case 'indices':
         return await getMarketIndices();
       default:
+        console.log(`[VN-Stock] Invalid action received: ${action}, body:`, body);
         return new Response(
           JSON.stringify({ error: 'Invalid action. Use: history, symbols, symbols-by-group, price-board, indices' }),
           { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -115,11 +116,11 @@ serve(async (req: Request) => {
 });
 
 // Get stock OHLCV history - Based on vnstock quote.history()
-async function getStockHistory(url: URL) {
-  const symbol = url.searchParams.get('symbol') || 'VCB';
-  const start = url.searchParams.get('start') || '2024-01-01';
-  const end = url.searchParams.get('end') || new Date().toISOString().split('T')[0];
-  const interval = url.searchParams.get('interval') || '1D';
+async function getStockHistory(url: URL, body?: any) {
+  const symbol = url.searchParams.get('symbol') || body?.symbol || 'VCB';
+  const start = url.searchParams.get('start') || body?.start || '2024-01-01';
+  const end = url.searchParams.get('end') || body?.end || new Date().toISOString().split('T')[0];
+  const interval = url.searchParams.get('interval') || body?.interval || '1D';
 
   console.log(`[VN-Stock] Getting history for ${symbol} from ${start} to ${end}, interval: ${interval}`);
 
@@ -211,8 +212,8 @@ async function getAllSymbols() {
 }
 
 // Get symbols by group (VN30, HOSE, HNX, etc.)
-async function getSymbolsByGroup(url: URL) {
-  const group = url.searchParams.get('group') || 'VN30';
+async function getSymbolsByGroup(url: URL, body?: any) {
+  const group = url.searchParams.get('group') || body?.group || 'VN30';
   console.log(`[VN-Stock] Getting symbols for group: ${group}`);
 
   const response = await fetchWithRetry(`${VCI_TRADING_URL}price/symbols/getByGroup?group=${group}`, {
