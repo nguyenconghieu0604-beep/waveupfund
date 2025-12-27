@@ -1,14 +1,15 @@
-import React, { useState } from 'react';
-import { motion } from 'framer-motion';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { 
-  TrendingUp, TrendingDown, Activity, ArrowUpRight, ArrowDownRight,
-  Zap, BarChart3, Building2, Banknote, Factory
+  TrendingUp, TrendingDown, ArrowUpRight, ArrowDownRight,
+  Zap, Building2, Factory, Search, X
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Language } from '@/types';
 import { translations } from '@/lib/translations';
 import CandlestickChart from '@/components/charts/CandlestickChart';
-
+import { useMarketIndices, useSymbols } from '@/hooks/useVNStockData';
+import { Input } from '@/components/ui/input';
 interface MarketCardProps {
   symbol: string;
   name: string;
@@ -81,58 +82,6 @@ const MarketCard: React.FC<MarketCardProps> = ({ symbol, name, price, change, ch
   );
 };
 
-interface StatCardProps {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-  subValue?: string;
-  trend?: 'up' | 'down';
-  delay?: number;
-}
-
-const StatCard: React.FC<StatCardProps> = ({ icon, label, value, subValue, trend, delay = 0 }) => {
-  return (
-    <motion.div
-      initial={{ opacity: 0, scale: 0.95 }}
-      animate={{ opacity: 1, scale: 1 }}
-      transition={{ duration: 0.3, delay }}
-      className="glass rounded-2xl p-5 border border-border/50"
-    >
-      <div className="flex items-center gap-3 mb-3">
-        <div className="p-2 rounded-xl bg-primary/10">
-          {icon}
-        </div>
-        <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{label}</span>
-      </div>
-      <div className="flex items-end justify-between">
-        <div>
-          <p className="font-mono text-2xl font-bold text-foreground">{value}</p>
-          {subValue && (
-            <p className={cn(
-              "text-sm font-medium mt-1",
-              trend === 'up' ? "text-success" : trend === 'down' ? "text-destructive" : "text-muted-foreground"
-            )}>
-              {subValue}
-            </p>
-          )}
-        </div>
-        {trend && (
-          <div className={cn(
-            "p-1.5 rounded-lg",
-            trend === 'up' ? "bg-success/10" : "bg-destructive/10"
-          )}>
-            {trend === 'up' ? (
-              <ArrowUpRight size={16} className="text-success" />
-            ) : (
-              <ArrowDownRight size={16} className="text-destructive" />
-            )}
-          </div>
-        )}
-      </div>
-    </motion.div>
-  );
-};
-
 interface MarketOverviewProps {
   lang: Language;
 }
@@ -141,14 +90,68 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
   const t = translations[lang];
   const isVi = lang === 'vi';
   const [selectedSymbol, setSelectedSymbol] = useState('VCB');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showSearchResults, setShowSearchResults] = useState(false);
+  const searchRef = useRef<HTMLDivElement>(null);
 
-  // Vietnamese stock market data - December 26, 2025
-  const marketData = [
-    { symbol: 'VN-INDEX', name: isVi ? 'Sàn HOSE' : 'HOSE Exchange', price: '1,265.43', change: 8.72, changePercent: 0.69 },
-    { symbol: 'HNX-INDEX', name: isVi ? 'Sàn HNX' : 'HNX Exchange', price: '228.56', change: -1.24, changePercent: -0.54 },
-    { symbol: 'VN30', name: isVi ? '30 CP hàng đầu' : 'Top 30 Stocks', price: '1,312.87', change: 12.45, changePercent: 0.96 },
-    { symbol: 'UPCOM', name: isVi ? 'Sàn UPCOM' : 'UPCOM Exchange', price: '92.34', change: 0.67, changePercent: 0.73 },
-  ];
+  // Fetch real-time market indices
+  const { indices, loading: indicesLoading } = useMarketIndices();
+  
+  // Fetch all symbols for search
+  const { symbols: allSymbols } = useSymbols();
+
+  // Filter symbols based on search query
+  const filteredSymbols = useMemo(() => {
+    if (!searchQuery.trim()) return [];
+    const query = searchQuery.toUpperCase();
+    return allSymbols
+      .filter(s => 
+        s.symbol.toUpperCase().includes(query) || 
+        s.name.toUpperCase().includes(query)
+      )
+      .slice(0, 10);
+  }, [searchQuery, allSymbols]);
+
+  // Close search results when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (searchRef.current && !searchRef.current.contains(event.target as Node)) {
+        setShowSearchResults(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // Map indices from API or use fallback
+  const marketData = useMemo(() => {
+    const indexNameMap: Record<string, { name_vi: string; name_en: string }> = {
+      'VNINDEX': { name_vi: 'Sàn HOSE', name_en: 'HOSE Exchange' },
+      'VN30': { name_vi: '30 CP hàng đầu', name_en: 'Top 30 Stocks' },
+      'HNX': { name_vi: 'Sàn HNX', name_en: 'HNX Exchange' },
+      'UPCOM': { name_vi: 'Sàn UPCOM', name_en: 'UPCOM Exchange' },
+    };
+
+    if (indices.length > 0) {
+      return indices.slice(0, 4).map(idx => ({
+        symbol: idx.symbol === 'VNINDEX' ? 'VN-INDEX' : idx.symbol === 'HNX' ? 'HNX-INDEX' : idx.symbol,
+        name: isVi 
+          ? (indexNameMap[idx.symbol]?.name_vi || idx.symbol) 
+          : (indexNameMap[idx.symbol]?.name_en || idx.symbol),
+        price: idx.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+        change: idx.change,
+        changePercent: parseFloat(idx.changePercent),
+      }));
+    }
+
+    // Fallback data
+    return [
+      { symbol: 'VN-INDEX', name: isVi ? 'Sàn HOSE' : 'HOSE Exchange', price: '1,265.43', change: 8.72, changePercent: 0.69 },
+      { symbol: 'HNX-INDEX', name: isVi ? 'Sàn HNX' : 'HNX Exchange', price: '228.56', change: -1.24, changePercent: -0.54 },
+      { symbol: 'VN30', name: isVi ? '30 CP hàng đầu' : 'Top 30 Stocks', price: '1,312.87', change: 12.45, changePercent: 0.96 },
+      { symbol: 'UPCOM', name: isVi ? 'Sàn UPCOM' : 'UPCOM Exchange', price: '92.34', change: 0.67, changePercent: 0.73 },
+    ];
+  }, [indices, isVi]);
 
   // Top Vietnamese stocks watchlist
   const watchlistData = [
@@ -161,6 +164,12 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
     { symbol: 'MSN', name: isVi ? 'Tập đoàn Masan' : 'Masan Group', price: '78,500', change: 0.89 },
     { symbol: 'VNM', name: isVi ? 'Vinamilk' : 'Vinamilk JSC', price: '72,300', change: -1.23 },
   ];
+
+  const handleSelectSymbol = (symbol: string) => {
+    setSelectedSymbol(symbol);
+    setSearchQuery('');
+    setShowSearchResults(false);
+  };
 
   return (
     <div className="space-y-8">
@@ -194,48 +203,23 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
         </div>
       </motion.div>
 
-      {/* Stats Grid - Vietnamese Market Stats */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard 
-          icon={<Activity size={18} className="text-primary" />}
-          label={isVi ? "Vốn hóa HOSE" : "HOSE Market Cap"}
-          value="4,280T"
-          subValue="+0.85%"
-          trend="up"
-          delay={0.1}
-        />
-        <StatCard 
-          icon={<Banknote size={18} className="text-success" />}
-          label={isVi ? "GTGD hôm nay" : "Today's Volume"}
-          value="18,542T"
-          subValue="+12.3%"
-          trend="up"
-          delay={0.15}
-        />
-        <StatCard 
-          icon={<Building2 size={18} className="text-accent" />}
-          label={isVi ? "Khối ngoại" : "Foreign Flow"}
-          value="-125T"
-          subValue={isVi ? "Bán ròng" : "Net Sell"}
-          trend="down"
-          delay={0.2}
-        />
-        <StatCard 
-          icon={<BarChart3 size={18} className="text-secondary" />}
-          label={isVi ? "Tỷ giá USD/VND" : "USD/VND"}
-          value="24,890"
-          subValue="+0.12%"
-          trend="up"
-          delay={0.25}
-        />
-      </div>
-
-      {/* Market Cards Grid - Vietnamese Indices */}
+      {/* Market Cards Grid - Vietnamese Indices with Realtime */}
       <div>
         <div className="flex items-center justify-between mb-4">
-          <h3 className="font-display text-xl font-semibold text-foreground">
-            {isVi ? 'Chỉ số thị trường' : 'Market Indices'}
-          </h3>
+          <div className="flex items-center gap-3">
+            <h3 className="font-display text-xl font-semibold text-foreground">
+              {isVi ? 'Chỉ số thị trường' : 'Market Indices'}
+            </h3>
+            {indicesLoading && (
+              <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+            )}
+            {!indicesLoading && indices.length > 0 && (
+              <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-success/10">
+                <div className="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
+                <span className="text-xs font-medium text-success">LIVE</span>
+              </div>
+            )}
+          </div>
           <button className="text-sm text-primary hover:underline font-medium">
             {isVi ? 'Xem tất cả' : 'View All'}
           </button>
@@ -251,31 +235,90 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
         </div>
       </div>
 
-      {/* Advanced Candlestick Chart */}
+      {/* Advanced Candlestick Chart with Search */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.35 }}
       >
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
           <h3 className="font-display text-xl font-semibold text-foreground">
             {isVi ? 'Biểu đồ kỹ thuật' : 'Advanced Chart'}
           </h3>
-          <div className="flex gap-2">
-            {['VCB', 'FPT', 'VHM', 'HPG'].map((sym) => (
-              <button
-                key={sym}
-                onClick={() => setSelectedSymbol(sym)}
-                className={cn(
-                  "px-3 py-1 rounded-lg text-sm font-medium transition-colors",
-                  selectedSymbol === sym 
-                    ? "bg-primary text-primary-foreground" 
-                    : "bg-muted/50 text-muted-foreground hover:bg-muted"
+          
+          <div className="flex items-center gap-3">
+            {/* Search Input */}
+            <div ref={searchRef} className="relative">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  type="text"
+                  placeholder={isVi ? 'Tìm mã CK...' : 'Search symbol...'}
+                  value={searchQuery}
+                  onChange={(e) => {
+                    setSearchQuery(e.target.value);
+                    setShowSearchResults(true);
+                  }}
+                  onFocus={() => setShowSearchResults(true)}
+                  className="pl-9 pr-8 w-40 sm:w-48 h-9 bg-background border-border/50"
+                />
+                {searchQuery && (
+                  <button
+                    onClick={() => {
+                      setSearchQuery('');
+                      setShowSearchResults(false);
+                    }}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  >
+                    <X size={14} />
+                  </button>
                 )}
-              >
-                {sym}
-              </button>
-            ))}
+              </div>
+              
+              {/* Search Results Dropdown */}
+              <AnimatePresence>
+                {showSearchResults && filteredSymbols.length > 0 && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                    className="absolute top-full left-0 right-0 mt-1 z-50 bg-background border border-border rounded-lg shadow-lg max-h-64 overflow-y-auto"
+                  >
+                    {filteredSymbols.map((s) => (
+                      <button
+                        key={s.symbol}
+                        onClick={() => handleSelectSymbol(s.symbol)}
+                        className="w-full px-3 py-2 text-left hover:bg-muted/50 transition-colors flex items-center justify-between"
+                      >
+                        <div>
+                          <span className="font-medium text-foreground">{s.symbol}</span>
+                          <span className="text-xs text-muted-foreground ml-2">{s.name}</span>
+                        </div>
+                        <span className="text-xs text-muted-foreground">{s.exchange}</span>
+                      </button>
+                    ))}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+            
+            {/* Quick Select Buttons */}
+            <div className="flex gap-2">
+              {['VCB', 'FPT', 'VHM', 'HPG'].map((sym) => (
+                <button
+                  key={sym}
+                  onClick={() => handleSelectSymbol(sym)}
+                  className={cn(
+                    "px-3 py-1 rounded-lg text-sm font-medium transition-colors",
+                    selectedSymbol === sym 
+                      ? "bg-primary text-primary-foreground" 
+                      : "bg-muted/50 text-muted-foreground hover:bg-muted"
+                  )}
+                >
+                  {sym}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
         <CandlestickChart 
