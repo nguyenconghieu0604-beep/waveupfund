@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import { MessageSquare, HelpCircle, AlertTriangle } from 'lucide-react';
 import type { Theme, Language } from '@/types';
 import { translations } from '@/lib/translations';
+import waveupLogo from '@/assets/waveup-logo.png';
 
 interface FooterProps {
   theme: Theme;
@@ -79,9 +80,12 @@ const Footer: React.FC<FooterProps> = ({ theme, lang, onOpenAbout, onOpenLegal }
       </div>
 
       <div className="mt-8 pt-6 border-t border-border flex flex-col sm:flex-row justify-between items-center gap-4">
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-          © {new Date().getFullYear()} Wave Up Terminal. All Rights Reserved.
-        </span>
+        <div className="flex items-center gap-3">
+          <img src={waveupLogo} alt="Wave Up" className="w-8 h-8 object-contain" />
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            © {new Date().getFullYear()} <span className="text-foreground/80">WAVE</span><span className="text-secondary"> UP</span> Terminal. All Rights Reserved.
+          </span>
+        </div>
         <div className="flex gap-6">
           <button 
             onClick={() => onOpenLegal('tos')} 
