@@ -2,6 +2,7 @@ import React from 'react';
 import { motion } from 'framer-motion';
 import MarketOverview from './MarketOverview';
 import heroPattern from '@/assets/hero-pattern.png';
+import waveupLogo from '@/assets/waveup-logo.png';
 import type { Theme, Language } from '@/types';
 
 interface TradingDashboardProps {
@@ -123,7 +124,15 @@ const TradingDashboard: React.FC<TradingDashboardProps> = ({
   };
 
   return (
-    <div className="w-full">
+    <div className="w-full relative">
+      {/* Subtle floating Wave Up logo watermark */}
+      <div className="fixed bottom-24 right-8 pointer-events-none z-0 opacity-[0.03]">
+        <img 
+          src={waveupLogo} 
+          alt="" 
+          className="w-48 h-48 grayscale"
+        />
+      </div>
       {renderContent()}
     </div>
   );

@@ -3,6 +3,7 @@ import { createChart, ColorType, CandlestickSeries, HistogramSeries, ISeriesApi 
 import { useStockHistory, useSymbols } from '@/hooks/useVNStockData';
 import { cn } from '@/lib/utils';
 import { Loader2, RefreshCw, Radio, Search } from 'lucide-react';
+import waveupLogo from '@/assets/waveup-logo.png';
 import type { Language } from '@/types';
 import {
   Command,
@@ -406,6 +407,15 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({
       </div>
 
       <div className="relative">
+        {/* Subtle Wave Up logo watermark behind chart */}
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-0">
+          <img 
+            src={waveupLogo} 
+            alt="" 
+            className="w-32 h-32 opacity-[0.04] grayscale"
+          />
+        </div>
+        
         {loading && (
           <div className="absolute inset-0 flex items-center justify-center bg-background/50 z-10 rounded-xl">
             <Loader2 size={32} className="text-primary animate-spin" />
@@ -416,7 +426,7 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({
             <p className="text-destructive text-sm">{error}</p>
           </div>
         )}
-        <div ref={chartContainerRef} className="w-full" style={{ height }} />
+        <div ref={chartContainerRef} className="w-full relative z-[1]" style={{ height }} />
       </div>
     </div>
   );
