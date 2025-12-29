@@ -4,12 +4,12 @@ import {
   TrendingUp, Globe, LineChart, Activity, Newspaper, 
   LayoutGrid, Calendar, Mic2, Lightbulb, Eye, FileText,
   Code2, PieChart, Compass, Users, Search, BookOpen, Wallet,
-  Layers, Microscope, Grid3X3, Coins, Map, X, Zap, Crown, ArrowRight
+  Layers, Microscope, Grid3X3, Coins, Map, X, Crown, ArrowRight
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Language } from '@/types';
 import { translations } from '@/lib/translations';
-
+import waveupLogo from '@/assets/waveup-logo.png';
 interface NavItemProps {
   icon: React.ReactNode;
   label: string;
@@ -113,20 +113,27 @@ const Sidebar: React.FC<SidebarProps> = ({
           className="h-full bg-sidebar border-r border-sidebar-border flex flex-col overflow-hidden z-40"
         >
           {/* Logo Header */}
-          <div className="p-6 flex items-center justify-between border-b border-sidebar-border">
+          <div className="p-5 flex items-center justify-between border-b border-sidebar-border">
             <motion.button 
               onClick={onOpenComparison}
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
               className="flex items-center gap-3 group"
             >
-              <div className="relative w-10 h-10 rounded-xl bg-gradient-to-br from-primary via-accent to-secondary flex items-center justify-center shadow-glow group-hover:shadow-glow-lg transition-shadow">
-                <Zap className="text-primary-foreground" size={22} fill="currentColor" />
-                <div className="absolute -inset-0.5 rounded-xl bg-gradient-to-br from-primary via-accent to-secondary opacity-50 blur-sm -z-10" />
+              <div className="relative">
+                <img 
+                  src={waveupLogo} 
+                  alt="Wave Up" 
+                  className="w-12 h-12 object-contain drop-shadow-lg group-hover:drop-shadow-xl transition-all"
+                />
+                <div className="absolute -inset-1 rounded-full bg-gradient-to-br from-primary via-accent to-secondary opacity-20 blur-md -z-10 group-hover:opacity-40 transition-opacity" />
               </div>
               <div className="flex flex-col">
-                <span className="font-display font-bold text-lg tracking-tight text-foreground">{t.terminal_title}</span>
-                <span className="text-[10px] font-bold text-primary uppercase tracking-[0.2em]">{t.lite_tag} Version</span>
+                <span className="font-display font-bold text-lg tracking-tight">
+                  <span className="text-muted-foreground">WAVE</span>
+                  <span className="text-secondary"> UP</span>
+                </span>
+                <span className="text-[10px] font-bold text-primary uppercase tracking-[0.2em]">{t.lite_tag} Terminal</span>
               </div>
             </motion.button>
             <button 
@@ -174,23 +181,24 @@ const Sidebar: React.FC<SidebarProps> = ({
               onClick={onOpenComparison}
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
-              className="w-full p-4 rounded-2xl bg-gradient-to-r from-secondary/20 via-accent/10 to-primary/20 border border-secondary/30 flex items-center justify-between group transition-all hover:border-secondary/50"
+              className="w-full p-4 rounded-2xl bg-gradient-to-r from-accent/20 via-primary/15 to-secondary/20 border border-primary/30 flex items-center justify-between group transition-all hover:border-primary/50"
             >
               <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-secondary to-accent flex items-center justify-center">
-                  <Crown size={16} className="text-white" />
+                <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary to-secondary flex items-center justify-center shadow-glow-sm">
+                  <Crown size={16} className="text-primary-foreground" />
                 </div>
                 <div className="text-left">
                   <span className="text-sm font-bold text-foreground">Unlock Pro</span>
                   <p className="text-[10px] text-muted-foreground">Advanced features</p>
                 </div>
               </div>
-              <ArrowRight size={16} className="text-secondary group-hover:translate-x-1 transition-transform" />
+              <ArrowRight size={16} className="text-primary group-hover:translate-x-1 transition-transform" />
             </motion.button>
 
-            <div className="text-center">
+            <div className="text-center flex items-center justify-center gap-2">
+              <img src={waveupLogo} alt="Wave Up" className="w-5 h-5 object-contain opacity-60" />
               <p className="text-[10px] font-medium text-muted-foreground">
-                © {new Date().getFullYear()} Wave Up Terminal
+                © {new Date().getFullYear()} Wave Up
               </p>
             </div>
           </div>
