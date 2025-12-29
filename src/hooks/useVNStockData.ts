@@ -53,6 +53,10 @@ export interface IndexData {
 
 export interface MarketStatus {
   isOpen: boolean;
+  session: 'PRE_MARKET' | 'MORNING' | 'LUNCH_BREAK' | 'AFTERNOON' | 'ATC' | 'CLOSED' | 'WEEKEND';
+  nextOpen?: string;
+  vnTime: string;
+  shouldSync: boolean;
   timestamp: number;
 }
 
@@ -176,36 +180,126 @@ async function smartFetch(
 }
 
 // ============================================================================
-// MARKET STATUS HOOK
+// VIETNAM STOCK MARKET TRADING HOURS UTILITIES
+// Trading hours: 9:00 - 15:00, Monday - Friday (UTC+7)
+// ============================================================================
+
+function getVietnamTime(): Date {
+  const now = new Date();
+  // Convert to Vietnam timezone (UTC+7)
+  const vnOffset = 7 * 60; // Vietnam is UTC+7
+  const utcTime = now.getTime() + now.getTimezoneOffset() * 60 * 1000;
+  return new Date(utcTime + vnOffset * 60 * 1000);
+}
+
+type SessionType = 'PRE_MARKET' | 'MORNING' | 'LUNCH_BREAK' | 'AFTERNOON' | 'ATC' | 'CLOSED' | 'WEEKEND';
+
+interface LocalMarketStatus {
+  isOpen: boolean;
+  session: SessionType;
+  shouldSync: boolean;
+  vnTime: string;
+}
+
+function getLocalMarketStatus(): LocalMarketStatus {
+  const vnTime = getVietnamTime();
+  const hours = vnTime.getHours();
+  const minutes = vnTime.getMinutes();
+  const day = vnTime.getDay();
+  const time = hours * 60 + minutes;
+  
+  const vnTimeStr = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+  
+  // Weekend (Saturday = 6, Sunday = 0)
+  if (day === 0 || day === 6) {
+    return { isOpen: false, session: 'WEEKEND', shouldSync: false, vnTime: vnTimeStr };
+  }
+  
+  // Pre-market: before 9:00
+  if (time < 540) {
+    return { isOpen: false, session: 'PRE_MARKET', shouldSync: time >= 525, vnTime: vnTimeStr };
+  }
+  
+  // Morning session: 9:00 - 11:30
+  if (time >= 540 && time < 690) {
+    return { isOpen: true, session: 'MORNING', shouldSync: true, vnTime: vnTimeStr };
+  }
+  
+  // Lunch break: 11:30 - 13:00
+  if (time >= 690 && time < 780) {
+    return { isOpen: false, session: 'LUNCH_BREAK', shouldSync: true, vnTime: vnTimeStr };
+  }
+  
+  // Afternoon session: 13:00 - 14:45
+  if (time >= 780 && time < 885) {
+    return { isOpen: true, session: 'AFTERNOON', shouldSync: true, vnTime: vnTimeStr };
+  }
+  
+  // ATC (Closing auction): 14:45 - 15:00
+  if (time >= 885 && time < 900) {
+    return { isOpen: true, session: 'ATC', shouldSync: true, vnTime: vnTimeStr };
+  }
+  
+  // After market: 15:00+
+  return { isOpen: false, session: 'CLOSED', shouldSync: time <= 915, vnTime: vnTimeStr };
+}
+
+// Get adaptive polling interval based on market session
+function getAdaptivePollingInterval(session: SessionType, baseInterval: number = 3000): number {
+  switch (session) {
+    case 'MORNING':
+    case 'AFTERNOON':
+    case 'ATC':
+      return baseInterval; // Fast polling during trading hours
+    case 'LUNCH_BREAK':
+      return 30000; // 30s during lunch break
+    case 'PRE_MARKET':
+      return 60000; // 1 min before market
+    case 'CLOSED':
+    case 'WEEKEND':
+      return 300000; // 5 min outside trading hours (data won't change)
+    default:
+      return baseInterval;
+  }
+}
+
+// ============================================================================
+// MARKET STATUS HOOK - Enhanced with Vietnam trading hours
 // ============================================================================
 
 export function useMarketStatus() {
-  const [isOpen, setIsOpen] = useState(false);
+  const [status, setStatus] = useState<LocalMarketStatus>(() => getLocalMarketStatus());
 
   useEffect(() => {
     const checkMarket = () => {
-      const now = new Date();
-      const vnTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Ho_Chi_Minh' }));
-      const hours = vnTime.getHours();
-      const minutes = vnTime.getMinutes();
-      const day = vnTime.getDay();
-      
-      if (day === 0 || day === 6) {
-        setIsOpen(false);
-        return;
-      }
-      
-      const time = hours * 60 + minutes;
-      // Morning: 9:00-11:30, Afternoon: 13:00-15:00
-      setIsOpen((time >= 540 && time <= 690) || (time >= 780 && time <= 900));
+      setStatus(getLocalMarketStatus());
     };
 
     checkMarket();
-    const interval = setInterval(checkMarket, 60000);
+    // Check every 30 seconds during trading hours, every minute otherwise
+    const intervalMs = status.isOpen ? 30000 : 60000;
+    const interval = setInterval(checkMarket, intervalMs);
+    return () => clearInterval(interval);
+  }, [status.isOpen]);
+
+  return status.isOpen;
+}
+
+// Extended hook with full market status
+export function useMarketStatusExtended() {
+  const [status, setStatus] = useState<LocalMarketStatus>(() => getLocalMarketStatus());
+
+  useEffect(() => {
+    const checkMarket = () => {
+      setStatus(getLocalMarketStatus());
+    };
+
+    checkMarket();
+    const interval = setInterval(checkMarket, 30000);
     return () => clearInterval(interval);
   }, []);
 
-  return isOpen;
+  return status;
 }
 
 // ============================================================================
@@ -300,11 +394,17 @@ export function useIntradayData(symbol: string, interval: string = '1m', autoRef
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<number>(0);
-  const isMarketOpen = useMarketStatus();
+  const marketStatus = useMarketStatusExtended();
   const isMountedRef = useRef(true);
 
   const fetchIntraday = useCallback(async (background = false) => {
     if (!symbol) return;
+    
+    // Skip fetching intraday data outside trading hours (data won't change)
+    if (!marketStatus.shouldSync && ['1m', '5m', '15m', '30m'].includes(interval)) {
+      console.log(`[useIntradayData] Skipping fetch - market ${marketStatus.session}`);
+      return;
+    }
 
     const cacheKey = `intraday:${symbol}:${interval}`;
     
@@ -345,7 +445,7 @@ export function useIntradayData(symbol: string, interval: string = '1m', autoRef
         setLoading(false);
       }
     }
-  }, [symbol, interval]);
+  }, [symbol, interval, marketStatus.shouldSync, marketStatus.session]);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -353,10 +453,10 @@ export function useIntradayData(symbol: string, interval: string = '1m', autoRef
     
     if (!autoRefresh) return;
 
-    // Adaptive polling: faster during market hours
-    const refreshMs = isMarketOpen ? 3000 : 30000;
+    // Adaptive polling based on market session
+    const refreshMs = getAdaptivePollingInterval(marketStatus.session, 3000);
     const timer = setInterval(() => {
-      if (isMarketOpen || !['1m', '5m', '15m', '30m'].includes(interval)) {
+      if (marketStatus.shouldSync || !['1m', '5m', '15m', '30m'].includes(interval)) {
         fetchIntraday(true); // Background refresh
       }
     }, refreshMs);
@@ -365,9 +465,9 @@ export function useIntradayData(symbol: string, interval: string = '1m', autoRef
       isMountedRef.current = false;
       clearInterval(timer);
     };
-  }, [fetchIntraday, autoRefresh, isMarketOpen, interval]);
+  }, [fetchIntraday, autoRefresh, marketStatus.session, marketStatus.shouldSync, interval]);
 
-  return { data, loading, error, lastUpdate, refetch: fetchIntraday, isMarketOpen };
+  return { data, loading, error, lastUpdate, refetch: fetchIntraday, isMarketOpen: marketStatus.isOpen, session: marketStatus.session };
 }
 
 // ============================================================================
@@ -436,7 +536,7 @@ export function usePriceBoard(
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<number>(0);
-  const isMarketOpen = useMarketStatus();
+  const marketStatus = useMarketStatusExtended();
   const inFlightRef = useRef(false);
   const isMountedRef = useRef(true);
 
@@ -505,17 +605,21 @@ export function usePriceBoard(
 
     if (!autoRefresh) return;
 
-    // Adaptive polling based on market hours
-    const intervalMs = refreshMs ?? (isMarketOpen ? 3000 : 30000);
-    const timer = setInterval(() => fetchPrices(true), intervalMs);
+    // Adaptive polling based on market session
+    const intervalMs = refreshMs ?? getAdaptivePollingInterval(marketStatus.session, 3000);
+    const timer = setInterval(() => {
+      if (marketStatus.shouldSync) {
+        fetchPrices(true);
+      }
+    }, intervalMs);
     
     return () => {
       isMountedRef.current = false;
       clearInterval(timer);
     };
-  }, [fetchPrices, autoRefresh, isMarketOpen, symbolsKey, refreshMs]);
+  }, [fetchPrices, autoRefresh, marketStatus.session, marketStatus.shouldSync, symbolsKey, refreshMs]);
 
-  return { prices, loading, error, lastUpdate, refetch: fetchPrices, isMarketOpen };
+  return { prices, loading, error, lastUpdate, refetch: fetchPrices, isMarketOpen: marketStatus.isOpen, session: marketStatus.session };
 }
 
 // ============================================================================
@@ -525,13 +629,16 @@ export function usePriceBoard(
 export function usePriceDepth(symbols: string[], autoRefresh: boolean = true) {
   const [depth, setDepth] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
-  const isMarketOpen = useMarketStatus();
+  const marketStatus = useMarketStatusExtended();
   const isMountedRef = useRef(true);
 
   const symbolsKey = [...symbols].sort().join(',');
 
   const fetchDepth = useCallback(async () => {
     if (symbols.length === 0) return;
+    
+    // Skip fetching outside sync hours
+    if (!marketStatus.shouldSync) return;
 
     const cacheKey = `depth:${symbolsKey}`;
     
@@ -563,7 +670,7 @@ export function usePriceDepth(symbols: string[], autoRefresh: boolean = true) {
     } finally {
       setLoading(false);
     }
-  }, [symbolsKey, symbols]);
+  }, [symbolsKey, symbols, marketStatus.shouldSync]);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -571,17 +678,21 @@ export function usePriceDepth(symbols: string[], autoRefresh: boolean = true) {
     
     if (!autoRefresh) return;
     
-    // Ultra-fast polling during market hours
-    const refreshMs = isMarketOpen ? 2000 : 60000;
-    const timer = setInterval(fetchDepth, refreshMs);
+    // Adaptive polling based on market session
+    const refreshMs = getAdaptivePollingInterval(marketStatus.session, 2000);
+    const timer = setInterval(() => {
+      if (marketStatus.shouldSync) {
+        fetchDepth();
+      }
+    }, refreshMs);
     
     return () => {
       isMountedRef.current = false;
       clearInterval(timer);
     };
-  }, [fetchDepth, autoRefresh, isMarketOpen]);
+  }, [fetchDepth, autoRefresh, marketStatus.session, marketStatus.shouldSync]);
 
-  return { depth, loading, refetch: fetchDepth, isMarketOpen };
+  return { depth, loading, refetch: fetchDepth, isMarketOpen: marketStatus.isOpen, session: marketStatus.session };
 }
 
 // ============================================================================
@@ -593,7 +704,7 @@ export function useMarketIndices(autoRefresh: boolean = true) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<number>(0);
-  const isMarketOpen = useMarketStatus();
+  const marketStatus = useMarketStatusExtended();
   const isMountedRef = useRef(true);
 
   const fetchIndices = useCallback(async (background = false) => {
@@ -645,17 +756,21 @@ export function useMarketIndices(autoRefresh: boolean = true) {
     
     if (!autoRefresh) return;
     
-    // Adaptive polling
-    const refreshMs = isMarketOpen ? 5000 : 60000;
-    const timer = setInterval(() => fetchIndices(true), refreshMs);
+    // Adaptive polling based on market session
+    const refreshMs = getAdaptivePollingInterval(marketStatus.session, 5000);
+    const timer = setInterval(() => {
+      if (marketStatus.shouldSync) {
+        fetchIndices(true);
+      }
+    }, refreshMs);
     
     return () => {
       isMountedRef.current = false;
       clearInterval(timer);
     };
-  }, [fetchIndices, autoRefresh, isMarketOpen]);
+  }, [fetchIndices, autoRefresh, marketStatus.session, marketStatus.shouldSync]);
 
-  return { indices, loading, error, lastUpdate, isMarketOpen };
+  return { indices, loading, error, lastUpdate, isMarketOpen: marketStatus.isOpen, session: marketStatus.session };
 }
 
 // ============================================================================
