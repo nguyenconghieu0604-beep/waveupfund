@@ -556,7 +556,7 @@ async function getPriceDepth(req: Request, url: URL) {
   return new Response(JSON.stringify(finalResult), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 }
 
-// Get market indices
+// Get market indices - REAL-TIME from GraphQL
 async function getMarketIndices() {
   const cacheKey = 'indices';
   const cached = getCached(cacheKey, CACHE_TTL['indices']);
@@ -564,52 +564,70 @@ async function getMarketIndices() {
     return new Response(JSON.stringify(cached), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   }
 
-  console.log('[VN-Stock] Fetching indices');
+  console.log('[VN-Stock] Fetching real-time indices via GraphQL');
 
-  const indexSymbols = ['VNINDEX', 'VN30', 'HNX', 'HNXINDEX', 'UPCOM'];
-
+  // Use GraphQL to get real-time index data
+  const indexSymbols = ['VNINDEX', 'HNXINDEX', 'UPINDEX', 'VN30'];
+  
   const payload = {
-    timeFrame: 'ONE_DAY',
-    symbols: indexSymbols,
-    to: Math.floor(Date.now() / 1000),
-    countBack: 2
+    query: `{
+      MarketPriceBoard(codes: ${JSON.stringify(indexSymbols)}) {
+        stockSymbol
+        matchedPrice
+        priceChange
+        priceChangePercent
+        accumulatedVolume
+        accumulatedValue
+        refPrice
+        highPrice
+        lowPrice
+        openPrice
+        ceiling
+        floor
+        __typename
+      }
+    }`,
+    variables: {}
   };
 
-  const response = await fetch(`${VCI_TRADING_URL}chart/OHLCChart/gap-chart`, {
+  const response = await fetch(VCI_GRAPHQL_URL, {
     method: 'POST',
     headers: vciHeaders,
     body: JSON.stringify(payload)
   });
 
   if (!response.ok) {
-    throw new Error(`VCI API error: ${response.status}`);
+    console.error(`[VN-Stock] GraphQL error: ${response.status}`);
+    // Fallback to empty
+    throw new Error(`VCI GraphQL error: ${response.status}`);
   }
 
-  const data = await response.json();
+  const responseData = await response.json();
+  const priceData = responseData.data?.MarketPriceBoard || [];
 
-  const indices = data.map((item: any, index: number) => {
-    const len = item.c?.length || 0;
-    const currentPrice = len > 0 ? item.c[len - 1] / 1000 : 0;
-    const prevPrice = len > 1 ? item.c[len - 2] / 1000 : currentPrice;
-    const change = currentPrice - prevPrice;
-    const changePercent = prevPrice > 0 ? (change / prevPrice) * 100 : 0;
+  console.log(`[VN-Stock] GraphQL raw indices:`, JSON.stringify(priceData.slice(0, 2)));
 
-    return {
-      symbol: indexSymbols[index],
-      price: currentPrice,
-      change: change,
-      changePercent: changePercent.toFixed(2),
-      volume: len > 0 ? item.v[len - 1] : 0
-    };
-  });
+  const indices = priceData.map((item: any) => ({
+    symbol: item.stockSymbol,
+    price: item.matchedPrice / 1000,
+    change: item.priceChange / 1000,
+    changePercent: (item.priceChangePercent || 0).toFixed(2),
+    volume: item.accumulatedVolume || 0,
+    value: item.accumulatedValue || 0,
+    ref: item.refPrice / 1000,
+    open: item.openPrice / 1000,
+    high: item.highPrice / 1000,
+    low: item.lowPrice / 1000
+  }));
 
   const result = { 
     data: indices, 
+    count: indices.length,
     marketOpen: isMarketOpen(),
     timestamp: Date.now()
   };
   setCache(cacheKey, result);
 
-  console.log(`[VN-Stock] Indices: ${indices.length}`);
+  console.log(`[VN-Stock] Real-time Indices:`, indices.map((i: any) => `${i.symbol}: ${i.price}`).join(', '));
   return new Response(JSON.stringify(result), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 }
