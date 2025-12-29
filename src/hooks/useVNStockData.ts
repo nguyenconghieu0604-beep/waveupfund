@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 
 export interface OHLCVData {
   time: number;
@@ -245,9 +245,19 @@ export function usePriceBoard(symbols: string[], autoRefresh: boolean = true) {
   const [lastUpdate, setLastUpdate] = useState<number>(0);
   const isMarketOpen = useMarketStatus();
 
-  const fetchPrices = useCallback(async () => {
-    if (symbols.length === 0) return;
+  const inFlightRef = useRef(false);
 
+  const normalizedSymbols = useMemo(() => {
+    return [...symbols].map((s) => s.toUpperCase()).sort();
+  }, [symbols.join(',')]);
+
+  const symbolsKey = normalizedSymbols.join(',');
+
+  const fetchPrices = useCallback(async () => {
+    if (normalizedSymbols.length === 0) return;
+    if (inFlightRef.current) return;
+
+    inFlightRef.current = true;
     setLoading(true);
     setError(null);
 
@@ -256,12 +266,14 @@ export function usePriceBoard(symbols: string[], autoRefresh: boolean = true) {
       const res = await fetch(`${projectUrl}/functions/v1/vn-stock-data?action=price-board`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbols })
+        body: JSON.stringify({ symbols: normalizedSymbols })
       });
 
       if (!res.ok) throw new Error(`API error: ${res.status}`);
 
       const result = await res.json();
+      if (result.error) throw new Error(result.error);
+
       setPrices(result.data || []);
       setLastUpdate(result.timestamp || Date.now());
     } catch (err) {
@@ -269,20 +281,21 @@ export function usePriceBoard(symbols: string[], autoRefresh: boolean = true) {
       setError(errorMessage);
       console.error('[usePriceBoard] Error:', errorMessage);
     } finally {
+      inFlightRef.current = false;
       setLoading(false);
     }
-  }, [symbols]);
+  }, [symbolsKey]);
 
   useEffect(() => {
     fetchPrices();
-    
+
     if (!autoRefresh) return;
-    
+
     // Aggressive polling: 3s during market hours, 30s otherwise
     const refreshMs = isMarketOpen ? 3000 : 30000;
     const timer = setInterval(fetchPrices, refreshMs);
     return () => clearInterval(timer);
-  }, [fetchPrices, autoRefresh, isMarketOpen]);
+  }, [fetchPrices, autoRefresh, isMarketOpen, symbolsKey]);
 
   return { prices, loading, error, lastUpdate, refetch: fetchPrices, isMarketOpen };
 }
