@@ -53,6 +53,42 @@ const vciHeaders = {
   'Connection': 'keep-alive',
 };
 
+// Retry fetch with exponential backoff for handling 502/503 errors
+async function fetchWithRetry(
+  url: string, 
+  options: RequestInit, 
+  maxRetries = 3, 
+  baseDelay = 500
+): Promise<Response> {
+  let lastError: Error | null = null;
+  
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const response = await fetch(url, options);
+      
+      // If we get a 502/503/504, retry with backoff
+      if (response.status >= 502 && response.status <= 504 && attempt < maxRetries - 1) {
+        const delay = baseDelay * Math.pow(2, attempt);
+        console.log(`[VN-Stock] Retry ${attempt + 1}/${maxRetries} after ${response.status}, waiting ${delay}ms`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      
+      return response;
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      
+      if (attempt < maxRetries - 1) {
+        const delay = baseDelay * Math.pow(2, attempt);
+        console.log(`[VN-Stock] Retry ${attempt + 1}/${maxRetries} after error: ${lastError.message}, waiting ${delay}ms`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+  
+  throw lastError || new Error('Fetch failed after retries');
+}
+
 // Check if Vietnam stock market is open
 function isMarketOpen(): boolean {
   const now = new Date();
@@ -177,7 +213,7 @@ async function getStockHistory(url: URL) {
     countBack: Math.min(countBack, 5000)
   };
 
-  const response = await fetch(`${VCI_TRADING_URL}chart/OHLCChart/gap-chart`, {
+  const response = await fetchWithRetry(`${VCI_TRADING_URL}chart/OHLCChart/gap-chart`, {
     method: 'POST',
     headers: vciHeaders,
     body: JSON.stringify(payload)
@@ -246,7 +282,7 @@ async function getIntradayData(url: URL) {
     countBack
   };
 
-  const response = await fetch(`${VCI_TRADING_URL}chart/OHLCChart/gap-chart`, {
+  const response = await fetchWithRetry(`${VCI_TRADING_URL}chart/OHLCChart/gap-chart`, {
     method: 'POST',
     headers: vciHeaders,
     body: JSON.stringify(payload)
@@ -299,7 +335,7 @@ async function getAllSymbols() {
 
   console.log('[VN-Stock] Fetching all symbols');
 
-  const response = await fetch(`${VCI_TRADING_URL}price/symbols/getAll`, {
+  const response = await fetchWithRetry(`${VCI_TRADING_URL}price/symbols/getAll`, {
     method: 'GET',
     headers: vciHeaders
   });
@@ -336,7 +372,7 @@ async function getSymbolsByGroup(url: URL) {
 
   console.log(`[VN-Stock] Symbols by group: ${group}`);
 
-  const response = await fetch(`${VCI_TRADING_URL}price/symbols/getByGroup?group=${group}`, {
+  const response = await fetchWithRetry(`${VCI_TRADING_URL}price/symbols/getByGroup?group=${group}`, {
     method: 'GET',
     headers: vciHeaders
   });
@@ -396,7 +432,7 @@ async function getPriceBoard(req: Request, url: URL) {
   };
 
   try {
-    const response = await fetch(`${VCI_TRADING_URL}chart/OHLCChart/gap-chart`, {
+    const response = await fetchWithRetry(`${VCI_TRADING_URL}chart/OHLCChart/gap-chart`, {
       method: 'POST',
       headers: vciHeaders,
       body: JSON.stringify(payload)
@@ -531,7 +567,7 @@ async function getPriceDepth(req: Request, url: URL) {
     variables: {}
   };
 
-  const response = await fetch(VCI_GRAPHQL_URL, {
+  const response = await fetchWithRetry(VCI_GRAPHQL_URL, {
     method: 'POST',
     headers: vciHeaders,
     body: JSON.stringify(payload)
@@ -635,7 +671,7 @@ async function fetchIndicesViaOHLC() {
       countBack: 5,
     };
 
-    const res = await fetch(`${VCI_TRADING_URL}chart/OHLCChart/gap-chart`, {
+    const res = await fetchWithRetry(`${VCI_TRADING_URL}chart/OHLCChart/gap-chart`, {
       method: 'POST',
       headers: vciHeaders,
       body: JSON.stringify(payload),
