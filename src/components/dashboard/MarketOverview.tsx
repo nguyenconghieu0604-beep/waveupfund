@@ -21,6 +21,23 @@ interface MarketCardProps {
 const MarketCard: React.FC<MarketCardProps> = ({ symbol, name, price, change, changePercent, delay = 0 }) => {
   const isPositive = change >= 0;
 
+  const bars = useMemo(() => {
+    // Stable pseudo-random bars per symbol (no re-render “jump”)
+    const seed = symbol.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
+    let s = seed;
+    const rand = () => {
+      // simple LCG
+      s = (s * 1664525 + 1013904223) % 4294967296;
+      return s / 4294967296;
+    };
+
+    return Array.from({ length: 20 }, (_, i) => {
+      const h = 0.2 + rand() * 0.8; // 0.2..1.0
+      const opacity = 0.35 + (i / 20) * 0.55;
+      return { h, opacity };
+    });
+  }, [symbol]);
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -34,10 +51,12 @@ const MarketCard: React.FC<MarketCardProps> = ({ symbol, name, price, change, ch
           <h3 className="font-display font-bold text-lg text-foreground">{symbol}</h3>
           <p className="text-xs text-muted-foreground">{name}</p>
         </div>
-        <div className={cn(
-          "p-2 rounded-xl transition-colors",
-          isPositive ? "bg-success/10 group-hover:bg-success/20" : "bg-destructive/10 group-hover:bg-destructive/20"
-        )}>
+        <div
+          className={cn(
+            "p-2 rounded-xl transition-colors",
+            isPositive ? "bg-success/10 group-hover:bg-success/20" : "bg-destructive/10 group-hover:bg-destructive/20"
+          )}
+        >
           {isPositive ? <TrendingUp size={18} className="text-success" /> : <TrendingDown size={18} className="text-destructive" />}
         </div>
       </div>
@@ -45,34 +64,38 @@ const MarketCard: React.FC<MarketCardProps> = ({ symbol, name, price, change, ch
       <div className="space-y-2">
         <p className="font-mono text-2xl font-bold text-foreground">{price}</p>
         <div className="flex items-center gap-2">
-          <span className={cn(
-            "flex items-center gap-1 text-sm font-semibold",
-            isPositive ? "text-success" : "text-destructive"
-          )}>
+          <span
+            className={cn(
+              "flex items-center gap-1 text-sm font-semibold",
+              isPositive ? "text-success" : "text-destructive"
+            )}
+          >
             {isPositive ? <ArrowUpRight size={14} /> : <ArrowDownRight size={14} />}
             {isPositive ? '+' : ''}{change.toFixed(2)}
           </span>
-          <span className={cn(
-            "px-2 py-0.5 rounded-md text-xs font-bold",
-            isPositive ? "bg-success/20 text-success" : "bg-destructive/20 text-destructive"
-          )}>
+          <span
+            className={cn(
+              "px-2 py-0.5 rounded-md text-xs font-bold",
+              isPositive ? "bg-success/20 text-success" : "bg-destructive/20 text-destructive"
+            )}
+          >
             {isPositive ? '+' : ''}{changePercent.toFixed(2)}%
           </span>
         </div>
       </div>
 
-      {/* Mini chart placeholder */}
+      {/* Mini chart (stable, no motion) */}
       <div className="mt-4 h-12 flex items-end gap-0.5" aria-hidden>
-        {[...Array(20)].map((_, i) => (
+        {bars.map((b, i) => (
           <div
             key={i}
             className={cn(
-              "flex-1 rounded-t transition-all",
+              "flex-1 rounded-t",
               isPositive ? "bg-success/30" : "bg-destructive/30"
             )}
             style={{
-              height: `${Math.random() * 80 + 20}%`,
-              opacity: 0.3 + (i / 20) * 0.7
+              height: `${Math.round(b.h * 100)}%`,
+              opacity: b.opacity,
             }}
           />
         ))}
@@ -169,9 +192,9 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
       }));
   }, [indices, isVi]);
 
-  // VN30 stocks - realtime data
+  // VN30 stocks - load every 20 minutes
   const vn30Symbols = useMemo(() => ['VCB', 'VHM', 'VIC', 'HPG', 'FPT', 'MBB', 'MSN', 'VNM'], []);
-  const { prices: vn30Prices, loading: vn30Loading, isMarketOpen: priceMarketOpen } = usePriceBoard(vn30Symbols, true);
+  const { prices: vn30Prices, loading: vn30Loading, isMarketOpen: priceMarketOpen } = usePriceBoard(vn30Symbols, true, 20 * 60 * 1000);
 
   const stockNames: Record<string, { vi: string; en: string }> = {
     VCB: { vi: 'Ngân hàng Vietcombank', en: 'Vietcombank' },

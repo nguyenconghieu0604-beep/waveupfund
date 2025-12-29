@@ -237,8 +237,12 @@ export function useSymbols(group?: string) {
   return { symbols, loading, error };
 }
 
-// Price board hook with aggressive polling during market hours
-export function usePriceBoard(symbols: string[], autoRefresh: boolean = true) {
+// Price board hook with polling (configurable)
+export function usePriceBoard(
+  symbols: string[],
+  autoRefresh: boolean = true,
+  refreshMs?: number
+) {
   const [prices, setPrices] = useState<PriceData[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -291,11 +295,10 @@ export function usePriceBoard(symbols: string[], autoRefresh: boolean = true) {
 
     if (!autoRefresh) return;
 
-    // Aggressive polling: 3s during market hours, 30s otherwise
-    const refreshMs = isMarketOpen ? 3000 : 30000;
-    const timer = setInterval(fetchPrices, refreshMs);
+    const intervalMs = refreshMs ?? (isMarketOpen ? 3000 : 30000);
+    const timer = setInterval(fetchPrices, intervalMs);
     return () => clearInterval(timer);
-  }, [fetchPrices, autoRefresh, isMarketOpen, symbolsKey]);
+  }, [fetchPrices, autoRefresh, isMarketOpen, symbolsKey, refreshMs]);
 
   return { prices, loading, error, lastUpdate, refetch: fetchPrices, isMarketOpen };
 }

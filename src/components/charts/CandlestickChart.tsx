@@ -2,11 +2,10 @@ import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { createChart, ColorType, CandlestickSeries, HistogramSeries, ISeriesApi } from 'lightweight-charts';
 import { useStockHistory, useSymbols } from '@/hooks/useVNStockData';
 import { cn } from '@/lib/utils';
-import { Loader2, RefreshCw, Radio, Search, X } from 'lucide-react';
+import { Loader2, RefreshCw, Radio, Search } from 'lucide-react';
 import type { Language } from '@/types';
 import {
   Command,
-  CommandEmpty,
   CommandGroup,
   CommandInput,
   CommandItem,
@@ -277,59 +276,71 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({
   return (
     <div className={cn("glass rounded-2xl p-4 border border-border/50", className)}>
       <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-4">
-          {/* Symbol with search */}
-          <Popover open={searchOpen} onOpenChange={setSearchOpen}>
-            <PopoverTrigger asChild>
-              <button
-                className="flex items-center gap-2 px-3 py-2 rounded-xl bg-muted/50 hover:bg-muted transition-colors group"
-                title={lang === 'vi' ? 'Tìm kiếm mã cổ phiếu' : 'Search stock symbol'}
-              >
-                <Search size={16} className="text-muted-foreground group-hover:text-primary transition-colors" />
-                <span className="font-display text-xl font-bold text-foreground">{symbol}</span>
-              </button>
-            </PopoverTrigger>
-            <PopoverContent className="w-[300px] p-0" align="start">
-              <Command shouldFilter={false}>
-                <CommandInput 
-                  placeholder={lang === 'vi' ? 'Tìm mã cổ phiếu...' : 'Search symbol...'} 
-                  value={searchQuery}
-                  onValueChange={setSearchQuery}
-                />
-                <CommandList>
-                  <CommandEmpty>
-                    {lang === 'vi' ? 'Không tìm thấy mã cổ phiếu' : 'No symbol found'}
-                  </CommandEmpty>
-                  <CommandGroup heading={searchQuery ? (lang === 'vi' ? 'Kết quả' : 'Results') : (lang === 'vi' ? 'Phổ biến' : 'Popular')}>
-                    {symbolsLoading ? (
-                      <div className="py-4 text-center text-sm text-muted-foreground">
-                        {lang === 'vi' ? 'Đang tải...' : 'Loading...'}
-                      </div>
-                    ) : filteredSymbols.map((s) => (
-                      <CommandItem
-                        key={s.symbol}
-                        value={s.symbol}
-                        onSelect={() => handleSymbolSelect(s.symbol)}
-                        className="flex items-center justify-between cursor-pointer"
-                      >
-                        <div className="flex items-center gap-3">
-                          <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center text-xs font-bold text-primary">
-                            {s.symbol.slice(0, 2)}
-                          </div>
-                          <div>
-                            <p className="font-semibold text-foreground">{s.symbol}</p>
-                            <p className="text-xs text-muted-foreground line-clamp-1">{s.name}</p>
-                          </div>
+        <div className="flex items-center gap-3">
+          {/* Symbol + search (next to symbol) */}
+          <div className="flex items-center gap-2">
+            <span className="font-display text-xl font-bold text-foreground">{symbol}</span>
+
+            <Popover open={searchOpen} onOpenChange={setSearchOpen}>
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  className="inline-flex items-center justify-center h-9 w-9 rounded-xl bg-muted/50 hover:bg-muted transition-colors"
+                  aria-label={lang === 'vi' ? 'Tìm kiếm mã cổ phiếu' : 'Search stock symbol'}
+                  title={lang === 'vi' ? 'Tìm kiếm mã cổ phiếu' : 'Search stock symbol'}
+                >
+                  <Search size={16} className="text-muted-foreground" />
+                </button>
+              </PopoverTrigger>
+
+              <PopoverContent className="w-[320px] p-0" align="start">
+                <Command shouldFilter={false}>
+                  <CommandInput
+                    placeholder={lang === 'vi' ? 'Tìm mã cổ phiếu...' : 'Search symbol...'}
+                    value={searchQuery}
+                    onValueChange={setSearchQuery}
+                    autoFocus
+                  />
+                  <CommandList>
+                    <CommandGroup
+                      heading={searchQuery ? (lang === 'vi' ? 'Kết quả' : 'Results') : (lang === 'vi' ? 'Phổ biến' : 'Popular')}
+                    >
+                      {symbolsLoading ? (
+                        <div className="py-4 text-center text-sm text-muted-foreground">
+                          {lang === 'vi' ? 'Đang tải...' : 'Loading...'}
                         </div>
-                        <span className="text-xs text-muted-foreground">{s.exchange}</span>
-                      </CommandItem>
-                    ))}
-                  </CommandGroup>
-                </CommandList>
-              </Command>
-            </PopoverContent>
-          </Popover>
-          
+                      ) : filteredSymbols.length === 0 ? (
+                        <div className="py-4 text-center text-sm text-muted-foreground">
+                          {lang === 'vi' ? 'Không tìm thấy mã cổ phiếu' : 'No symbol found'}
+                        </div>
+                      ) : (
+                        filteredSymbols.map((s) => (
+                          <CommandItem
+                            key={s.symbol}
+                            value={s.symbol}
+                            onSelect={() => handleSymbolSelect(s.symbol)}
+                            className="flex items-center justify-between cursor-pointer"
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center text-xs font-bold text-primary">
+                                {s.symbol.slice(0, 2)}
+                              </div>
+                              <div>
+                                <p className="font-semibold text-foreground">{s.symbol}</p>
+                                <p className="text-xs text-muted-foreground line-clamp-1">{s.name}</p>
+                              </div>
+                            </div>
+                            <span className="text-xs text-muted-foreground">{s.exchange}</span>
+                          </CommandItem>
+                        ))
+                      )}
+                    </CommandGroup>
+                  </CommandList>
+                </Command>
+              </PopoverContent>
+            </Popover>
+          </div>
+
           {data.length > 0 && (
             <span className="font-mono text-lg font-semibold text-foreground">
               {data[data.length - 1]?.close.toLocaleString('vi-VN')}
@@ -342,8 +353,8 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({
             onClick={() => setIsAutoRefresh(!isAutoRefresh)}
             className={cn(
               "flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium transition-colors",
-              isAutoRefresh 
-                ? "bg-green-500/20 text-green-400 border border-green-500/30" 
+              isAutoRefresh
+                ? "bg-green-500/20 text-green-400 border border-green-500/30"
                 : "bg-muted/50 text-muted-foreground hover:bg-muted"
             )}
             title={isAutoRefresh ? 'Tắt tự động cập nhật' : 'Bật tự động cập nhật'}
@@ -351,18 +362,19 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({
             <Radio size={12} className={cn(isAutoRefresh && "animate-pulse")} />
             {isAutoRefresh ? 'LIVE' : 'OFF'}
           </button>
-          
+
           {/* Last update time */}
           {lastUpdate && (
-            <span className="text-xs text-muted-foreground">
-              {formatLastUpdate()}
-            </span>
+            <span className="text-xs text-muted-foreground">{formatLastUpdate()}</span>
           )}
-          
+
           {/* Manual refresh */}
-          <button 
-            onClick={() => { refetch(); setLastUpdate(new Date()); }} 
-            disabled={loading} 
+          <button
+            onClick={() => {
+              refetch();
+              setLastUpdate(new Date());
+            }}
+            disabled={loading}
             className="p-2 rounded-lg hover:bg-muted/50"
             title="Cập nhật ngay"
           >
