@@ -566,12 +566,13 @@ async function getMarketIndices() {
 
   console.log('[VN-Stock] Fetching real-time indices via GraphQL');
 
-  // Use GraphQL to get real-time index data
-  const indexSymbols = ['VNINDEX', 'HNXINDEX', 'UPINDEX', 'VN30'];
-  
+  // In practice, index codes can vary by provider/version.
+  // We query a superset and then map to canonical symbols.
+  const requestedCodes = ['VNINDEX', 'VN30', 'HNXINDEX', 'HNX', 'UPINDEX', 'UPCOM'];
+
   const payload = {
     query: `{
-      MarketPriceBoard(codes: ${JSON.stringify(indexSymbols)}) {
+      MarketPriceBoard(codes: ${JSON.stringify(requestedCodes)}) {
         stockSymbol
         matchedPrice
         priceChange
@@ -584,50 +585,86 @@ async function getMarketIndices() {
         openPrice
         ceiling
         floor
-        __typename
       }
     }`,
-    variables: {}
+    variables: {},
   };
 
   const response = await fetch(VCI_GRAPHQL_URL, {
     method: 'POST',
     headers: vciHeaders,
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
   });
 
   if (!response.ok) {
     console.error(`[VN-Stock] GraphQL error: ${response.status}`);
-    // Fallback to empty
     throw new Error(`VCI GraphQL error: ${response.status}`);
   }
 
   const responseData = await response.json();
-  const priceData = responseData.data?.MarketPriceBoard || [];
+  const rows = responseData?.data?.MarketPriceBoard || [];
 
-  console.log(`[VN-Stock] GraphQL raw indices:`, JSON.stringify(priceData.slice(0, 2)));
+  // Normalize numbers: some codes return values already in "index points" (e.g., 1,250)
+  // while equities are often encoded x1000 (e.g., 61,500). We correct using a simple heuristic.
+  const norm = (v: any) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return 0;
+    return n > 100000 ? n / 1000 : n;
+  };
 
-  const indices = priceData.map((item: any) => ({
-    symbol: item.stockSymbol,
-    price: item.matchedPrice / 1000,
-    change: item.priceChange / 1000,
-    changePercent: (item.priceChangePercent || 0).toFixed(2),
-    volume: item.accumulatedVolume || 0,
-    value: item.accumulatedValue || 0,
-    ref: item.refPrice / 1000,
-    open: item.openPrice / 1000,
-    high: item.highPrice / 1000,
-    low: item.lowPrice / 1000
-  }));
+  const bySymbol = new Map<string, any>();
+  for (const r of rows) {
+    if (r?.stockSymbol) bySymbol.set(String(r.stockSymbol).toUpperCase(), r);
+  }
 
-  const result = { 
-    data: indices, 
+  const pick = (codes: string[]) => {
+    for (const c of codes) {
+      const row = bySymbol.get(c.toUpperCase());
+      if (row) return row;
+    }
+    return null;
+  };
+
+  const canonical = [
+    { symbol: 'VNINDEX', aliases: ['VNINDEX'] },
+    { symbol: 'VN30', aliases: ['VN30'] },
+    { symbol: 'HNXINDEX', aliases: ['HNXINDEX', 'HNX'] },
+    { symbol: 'UPCOM', aliases: ['UPINDEX', 'UPCOM'] },
+  ];
+
+  const indices = canonical
+    .map(({ symbol, aliases }) => {
+      const item = pick(aliases);
+      if (!item) return null;
+
+      return {
+        symbol,
+        price: norm(item.matchedPrice),
+        change: norm(item.priceChange),
+        changePercent: (Number(item.priceChangePercent) || 0).toFixed(2),
+        volume: Number(item.accumulatedVolume) || 0,
+        value: Number(item.accumulatedValue) || 0,
+        ref: norm(item.refPrice),
+        open: norm(item.openPrice),
+        high: norm(item.highPrice),
+        low: norm(item.lowPrice),
+      };
+    })
+    .filter(Boolean);
+
+  const result = {
+    data: indices,
     count: indices.length,
     marketOpen: isMarketOpen(),
-    timestamp: Date.now()
+    timestamp: Date.now(),
   };
+
   setCache(cacheKey, result);
 
-  console.log(`[VN-Stock] Real-time Indices:`, indices.map((i: any) => `${i.symbol}: ${i.price}`).join(', '));
+  console.log(
+    `[VN-Stock] Real-time Indices:`,
+    indices.map((i: any) => `${i.symbol}: ${i.price}`).join(', '),
+  );
+
   return new Response(JSON.stringify(result), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 }
