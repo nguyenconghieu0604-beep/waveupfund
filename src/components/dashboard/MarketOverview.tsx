@@ -279,6 +279,7 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
           </div>
         </div>
         <CandlestickChart 
+          key={`${selectedSymbol}-${lang}`}
           symbol={selectedSymbol} 
           lang={lang} 
           height={450}
