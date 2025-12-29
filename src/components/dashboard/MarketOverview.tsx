@@ -253,41 +253,57 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
         </div>
       </motion.div>
 
-      {/* Stats Grid - Vietnamese Market Stats */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard 
-          icon={<Activity size={18} className="text-primary" />}
-          label={isVi ? "Vốn hóa HOSE" : "HOSE Market Cap"}
-          value="4,280T"
-          subValue="+0.85%"
-          trend="up"
-          delay={0.1}
-        />
-        <StatCard 
-          icon={<Banknote size={18} className="text-success" />}
-          label={isVi ? "GTGD hôm nay" : "Today's Volume"}
-          value="18,542T"
-          subValue="+12.3%"
-          trend="up"
-          delay={0.15}
-        />
-        <StatCard 
-          icon={<Building2 size={18} className="text-accent" />}
-          label={isVi ? "Khối ngoại" : "Foreign Flow"}
-          value="-125T"
-          subValue={isVi ? "Bán ròng" : "Net Sell"}
-          trend="down"
-          delay={0.2}
-        />
-        <StatCard 
-          icon={<BarChart3 size={18} className="text-secondary" />}
-          label={isVi ? "Tỷ giá USD/VND" : "USD/VND"}
-          value="24,890"
-          subValue="+0.12%"
-          trend="up"
-          delay={0.25}
-        />
-      </div>
+      {/* Stats Grid - Real-time from indices */}
+      {(() => {
+        const vnIndex = indices.find((i) => i.symbol === 'VNINDEX');
+        const vn30 = indices.find((i) => i.symbol === 'VN30');
+        const hnx = indices.find((i) => i.symbol === 'HNXINDEX');
+        const upcom = indices.find((i) => i.symbol === 'UPCOM');
+
+        const formatVolume = (vol: number) => {
+          if (!vol) return '—';
+          if (vol >= 1e9) return `${(vol / 1e9).toFixed(1)}B`;
+          if (vol >= 1e6) return `${(vol / 1e6).toFixed(1)}M`;
+          return vol.toLocaleString('vi-VN');
+        };
+
+        return (
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <StatCard
+              icon={<Activity size={18} className="text-primary" />}
+              label={isVi ? 'KL khớp HOSE' : 'HOSE Volume'}
+              value={formatVolume(vnIndex?.volume || 0)}
+              subValue={vnIndex ? `${Number(vnIndex.changePercent) >= 0 ? '+' : ''}${vnIndex.changePercent}%` : '—'}
+              trend={Number(vnIndex?.changePercent) >= 0 ? 'up' : 'down'}
+              delay={0.1}
+            />
+            <StatCard
+              icon={<Banknote size={18} className="text-success" />}
+              label={isVi ? 'KL khớp VN30' : 'VN30 Volume'}
+              value={formatVolume(vn30?.volume || 0)}
+              subValue={vn30 ? `${Number(vn30.changePercent) >= 0 ? '+' : ''}${vn30.changePercent}%` : '—'}
+              trend={Number(vn30?.changePercent) >= 0 ? 'up' : 'down'}
+              delay={0.15}
+            />
+            <StatCard
+              icon={<Building2 size={18} className="text-accent" />}
+              label={isVi ? 'HNX' : 'HNX Index'}
+              value={hnx ? hnx.price.toLocaleString('vi-VN', { maximumFractionDigits: 2 }) : '—'}
+              subValue={hnx ? `${Number(hnx.changePercent) >= 0 ? '+' : ''}${hnx.changePercent}%` : '—'}
+              trend={Number(hnx?.changePercent) >= 0 ? 'up' : 'down'}
+              delay={0.2}
+            />
+            <StatCard
+              icon={<BarChart3 size={18} className="text-secondary" />}
+              label={isVi ? 'UPCOM' : 'UPCOM Index'}
+              value={upcom ? upcom.price.toLocaleString('vi-VN', { maximumFractionDigits: 2 }) : '—'}
+              subValue={upcom ? `${Number(upcom.changePercent) >= 0 ? '+' : ''}${upcom.changePercent}%` : '—'}
+              trend={Number(upcom?.changePercent) >= 0 ? 'up' : 'down'}
+              delay={0.25}
+            />
+          </div>
+        );
+      })()}
 
       {/* Market Cards Grid - Vietnamese Indices */}
       <div>
