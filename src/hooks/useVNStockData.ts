@@ -440,10 +440,11 @@ export function usePriceBoard(
   const inFlightRef = useRef(false);
   const isMountedRef = useRef(true);
 
-  // Stable symbols key
+  // Stable symbols key - memoize based on JSON string to detect actual changes
+  const symbolsString = JSON.stringify(symbols);
   const normalizedSymbols = useMemo(() => {
     return [...symbols].map((s) => s.toUpperCase()).sort();
-  }, [symbols.join(',')]);
+  }, [symbolsString]);
 
   const symbolsKey = normalizedSymbols.join(',');
 
