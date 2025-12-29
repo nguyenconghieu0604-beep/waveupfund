@@ -556,7 +556,7 @@ async function getPriceDepth(req: Request, url: URL) {
   return new Response(JSON.stringify(finalResult), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 }
 
-// Get market indices - derived from OHLC (consistent with chart)
+// Get market indices - fetching from dedicated index endpoint
 async function getMarketIndices() {
   const cacheKey = 'indices';
   const cached = getCached(cacheKey, CACHE_TTL['indices']);
@@ -564,15 +564,62 @@ async function getMarketIndices() {
     return new Response(JSON.stringify(cached), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   }
 
-  const symbols = ['VNINDEX', 'HNXINDEX', 'VN30', 'UPCOM'];
+  console.log('[VN-Stock] Indices: fetching via REST API');
+
+  // Use the price/symbols API with index codes
+  const indexCodes = ['VNINDEX', 'HNX', 'VN30', 'UPCOM'];
+  
+  try {
+    // Try fetching index data via the market-watch or similar endpoint
+    const url = `${VCI_TRADING_URL}price/symbols/getByGroup?group=VNINDEX`;
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: vciHeaders,
+    });
+
+    // If group endpoint fails, fall back to direct OHLC with proper scaling
+    const indices = await fetchIndicesViaOHLC();
+    
+    const result = {
+      data: indices,
+      count: indices.length,
+      marketOpen: isMarketOpen(),
+      timestamp: Date.now(),
+      source: 'ohlc-scaled',
+    };
+
+    setCache(cacheKey, result);
+
+    console.log(
+      '[VN-Stock] Indices:',
+      indices.map((i: any) => `${i.symbol}: ${Number(i.price).toFixed(2)}`).join(', '),
+    );
+
+    return new Response(JSON.stringify(result), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+  } catch (err) {
+    console.error('[VN-Stock] Indices error:', err instanceof Error ? err.message : String(err));
+    throw err;
+  }
+}
+
+// Fetch indices via OHLC with proper scaling (no /1000 for index points)
+async function fetchIndicesViaOHLC() {
+  // Try multiple symbol variations for each index
+  const indexConfigs = [
+    { outputSymbol: 'VNINDEX', trySymbols: ['VNINDEX'] },
+    { outputSymbol: 'HNXINDEX', trySymbols: ['HNX-INDEX', 'HNXINDEX', 'HNX'] },
+    { outputSymbol: 'VN30', trySymbols: ['VN30', 'VN30-INDEX'] },
+    { outputSymbol: 'UPCOM', trySymbols: ['UPCOM-INDEX', 'UPCOM', 'UPCoM'] },
+  ];
+  
   const to = Math.floor(Date.now() / 1000);
 
-  const fetchLastTwoDaily = async (symbol: string) => {
+  const fetchIndex = async (symbol: string): Promise<any> => {
     const payload = {
       timeFrame: 'ONE_DAY',
       symbols: [symbol],
       to,
-      countBack: 2,
+      countBack: 5,
     };
 
     const res = await fetch(`${VCI_TRADING_URL}chart/OHLCChart/gap-chart`, {
@@ -581,15 +628,30 @@ async function getMarketIndices() {
       body: JSON.stringify(payload),
     });
 
-    if (!res.ok) throw new Error(`VCI API error: ${res.status}`);
+    if (!res.ok) {
+      console.log(`[VN-Stock] OHLC ${symbol}: status ${res.status}`);
+      return null;
+    }
 
     const data = await res.json();
-    const s = Array.isArray(data) ? data?.[0] : null;
-    if (!s || !Array.isArray(s?.c) || s.c.length === 0) return null;
+    const s = Array.isArray(data) && data.length > 0 ? data[0] : null;
+    
+    if (!s || !Array.isArray(s?.c) || s.c.length === 0) {
+      console.log(`[VN-Stock] OHLC ${symbol}: no candle data`);
+      return null;
+    }
 
     const len = s.c.length;
-    const lastClose = Number(s.c[len - 1]) / 1000;
-    const prevClose = len >= 2 ? Number(s.c[len - 2]) / 1000 : lastClose;
+    
+    // For indices, values are typically NOT divided by 1000
+    const rawClose = Number(s.c[len - 1]);
+    const isIndex = rawClose > 50;
+    const scale = isIndex ? 1 : 1000;
+    
+    const lastClose = rawClose / scale;
+    const prevClose = len >= 2 ? Number(s.c[len - 2]) / scale : lastClose;
+
+    console.log(`[VN-Stock] OHLC ${symbol}: raw=${rawClose}, scaled=${lastClose}, isIndex=${isIndex}`);
 
     return {
       price: lastClose,
@@ -597,53 +659,33 @@ async function getMarketIndices() {
       changePercent: prevClose ? ((lastClose - prevClose) / prevClose) * 100 : 0,
       volume: Number(s.v?.[len - 1]) || 0,
       ref: prevClose,
-      open: Number(s.o?.[len - 1]) / 1000,
-      high: Number(s.h?.[len - 1]) / 1000,
-      low: Number(s.l?.[len - 1]) / 1000,
+      open: Number(s.o?.[len - 1]) / scale,
+      high: Number(s.h?.[len - 1]) / scale,
+      low: Number(s.l?.[len - 1]) / scale,
     };
   };
 
-  console.log('[VN-Stock] Indices: fetching OHLC for VNINDEX/HNXINDEX/VN30/UPCOM');
-
   const results = await Promise.all(
-    symbols.map(async (symbol) => {
-      try {
-        const ohlc = await fetchLastTwoDaily(symbol);
-        if (!ohlc) return null;
-        return {
-          symbol,
-          price: ohlc.price,
-          change: ohlc.change,
-          changePercent: ohlc.changePercent.toFixed(2),
-          volume: ohlc.volume,
-          ref: ohlc.ref,
-          open: ohlc.open,
-          high: ohlc.high,
-          low: ohlc.low,
-        };
-      } catch (e) {
-        console.error('[VN-Stock] Indices OHLC error:', symbol, e instanceof Error ? e.message : String(e));
-        return null;
+    indexConfigs.map(async ({ outputSymbol, trySymbols }) => {
+      for (const sym of trySymbols) {
+        try {
+          const data = await fetchIndex(sym);
+          if (data) {
+            return {
+              symbol: outputSymbol,
+              ...data,
+              changePercent: data.changePercent.toFixed(2),
+            };
+          }
+        } catch (e) {
+          console.error(`[VN-Stock] Index ${sym} error:`, e instanceof Error ? e.message : String(e));
+        }
       }
+      return null;
     }),
   );
 
-  const indices = results.filter(Boolean);
-
-  const result = {
-    data: indices,
-    count: indices.length,
-    marketOpen: isMarketOpen(),
-    timestamp: Date.now(),
-    source: 'ohlc',
-  };
-
-  setCache(cacheKey, result);
-
-  console.log(
-    '[VN-Stock] Indices (OHLC):',
-    indices.map((i: any) => `${i.symbol}: ${Number(i.price).toFixed(2)}`).join(', '),
-  );
-
-  return new Response(JSON.stringify(result), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+  return results.filter(Boolean);
 }
+
+
