@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
-import { 
+import {
   TrendingUp, TrendingDown, Activity, ArrowUpRight, ArrowDownRight,
   Zap, BarChart3, Building2, Banknote, Factory
 } from 'lucide-react';
@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils';
 import type { Language } from '@/types';
 import { translations } from '@/lib/translations';
 import CandlestickChart from '@/components/charts/CandlestickChart';
+import { useMarketIndices } from '@/hooks/useVNStockData';
 
 interface MarketCardProps {
   symbol: string;
@@ -20,7 +21,7 @@ interface MarketCardProps {
 
 const MarketCard: React.FC<MarketCardProps> = ({ symbol, name, price, change, changePercent, delay = 0 }) => {
   const isPositive = change >= 0;
-  
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -41,7 +42,7 @@ const MarketCard: React.FC<MarketCardProps> = ({ symbol, name, price, change, ch
           {isPositive ? <TrendingUp size={18} className="text-success" /> : <TrendingDown size={18} className="text-destructive" />}
         </div>
       </div>
-      
+
       <div className="space-y-2">
         <p className="font-mono text-2xl font-bold text-foreground">{price}</p>
         <div className="flex items-center gap-2">
@@ -62,7 +63,7 @@ const MarketCard: React.FC<MarketCardProps> = ({ symbol, name, price, change, ch
       </div>
 
       {/* Mini chart placeholder */}
-      <div className="mt-4 h-12 flex items-end gap-0.5">
+      <div className="mt-4 h-12 flex items-end gap-0.5" aria-hidden>
         {[...Array(20)].map((_, i) => (
           <div
             key={i}
@@ -70,7 +71,7 @@ const MarketCard: React.FC<MarketCardProps> = ({ symbol, name, price, change, ch
               "flex-1 rounded-t transition-all",
               isPositive ? "bg-success/30" : "bg-destructive/30"
             )}
-            style={{ 
+            style={{
               height: `${Math.random() * 80 + 20}%`,
               opacity: 0.3 + (i / 20) * 0.7
             }}
@@ -137,18 +138,37 @@ interface MarketOverviewProps {
   lang: Language;
 }
 
+const formatIndexSymbol = (symbol: string) => {
+  if (symbol === 'VNINDEX') return 'VN-INDEX';
+  if (symbol === 'HNXINDEX') return 'HNX-INDEX';
+  return symbol;
+};
+
 const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
   const t = translations[lang];
   const isVi = lang === 'vi';
   const [selectedSymbol, setSelectedSymbol] = useState('VCB');
 
-  // Vietnamese stock market data - December 26, 2025
-  const marketData = [
-    { symbol: 'VN-INDEX', name: isVi ? 'Sàn HOSE' : 'HOSE Exchange', price: '1,265.43', change: 8.72, changePercent: 0.69 },
-    { symbol: 'HNX-INDEX', name: isVi ? 'Sàn HNX' : 'HNX Exchange', price: '228.56', change: -1.24, changePercent: -0.54 },
-    { symbol: 'VN30', name: isVi ? '30 CP hàng đầu' : 'Top 30 Stocks', price: '1,312.87', change: 12.45, changePercent: 0.96 },
-    { symbol: 'UPCOM', name: isVi ? 'Sàn UPCOM' : 'UPCOM Exchange', price: '92.34', change: 0.67, changePercent: 0.73 },
-  ];
+  const { indices, loading: indicesLoading } = useMarketIndices(true);
+
+  const marketData = useMemo(() => {
+    const nameBySymbol: Record<string, string> = {
+      VNINDEX: isVi ? 'Sàn HOSE' : 'HOSE Exchange',
+      HNXINDEX: isVi ? 'Sàn HNX' : 'HNX Exchange',
+      VN30: isVi ? '30 CP hàng đầu' : 'Top 30 Stocks',
+      UPCOM: isVi ? 'Sàn UPCOM' : 'UPCOM Exchange',
+    };
+
+    return (indices || [])
+      .filter((i) => ['VNINDEX', 'HNXINDEX', 'VN30', 'UPCOM'].includes(i.symbol))
+      .map((i) => ({
+        symbol: formatIndexSymbol(i.symbol),
+        name: nameBySymbol[i.symbol] ?? i.symbol,
+        price: (i.price ?? 0).toLocaleString('vi-VN', { maximumFractionDigits: 2 }),
+        change: Number(i.change ?? 0),
+        changePercent: Number(i.changePercent ?? 0),
+      }));
+  }, [indices, isVi]);
 
   // Top Vietnamese stocks watchlist
   const watchlistData = [
@@ -161,6 +181,7 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
     { symbol: 'MSN', name: isVi ? 'Tập đoàn Masan' : 'Masan Group', price: '78,500', change: 0.89 },
     { symbol: 'VNM', name: isVi ? 'Vinamilk' : 'Vinamilk JSC', price: '72,300', change: -1.23 },
   ];
+
 
   return (
     <div className="space-y-8">
