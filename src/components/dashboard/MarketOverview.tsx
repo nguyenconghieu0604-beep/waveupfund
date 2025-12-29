@@ -170,7 +170,7 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
   }, [indices, isVi]);
 
   // VN30 stocks - realtime data
-  const vn30Symbols = ['VCB', 'VHM', 'VIC', 'HPG', 'FPT', 'MBB', 'MSN', 'VNM'];
+  const vn30Symbols = useMemo(() => ['VCB', 'VHM', 'VIC', 'HPG', 'FPT', 'MBB', 'MSN', 'VNM'], []);
   const { prices: vn30Prices, loading: vn30Loading, isMarketOpen: priceMarketOpen } = usePriceBoard(vn30Symbols, true);
 
   const stockNames: Record<string, { vi: string; en: string }> = {
