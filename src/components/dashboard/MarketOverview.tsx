@@ -19,29 +19,25 @@ interface MarketCardProps {
   delay?: number;
 }
 
-const MarketCard: React.FC<MarketCardProps> = ({ symbol, name, price, change, changePercent, volume, delay = 0 }) => {
+const MarketCard: React.FC<MarketCardProps> = ({ symbol, name, price, change, changePercent, delay = 0 }) => {
   const isPositive = change >= 0;
 
   const bars = useMemo(() => {
+    // Stable pseudo-random bars per symbol (no re-render “jump”)
     const seed = symbol.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
     let s = seed;
     const rand = () => {
+      // simple LCG
       s = (s * 1664525 + 1013904223) % 4294967296;
       return s / 4294967296;
     };
+
     return Array.from({ length: 20 }, (_, i) => {
-      const h = 0.2 + rand() * 0.8;
+      const h = 0.2 + rand() * 0.8; // 0.2..1.0
       const opacity = 0.35 + (i / 20) * 0.55;
       return { h, opacity };
     });
   }, [symbol]);
-
-  const formatVolume = (vol: number) => {
-    if (!vol) return '';
-    if (vol >= 1e9) return `${(vol / 1e9).toFixed(1)}B`;
-    if (vol >= 1e6) return `${(vol / 1e6).toFixed(1)}M`;
-    return vol.toLocaleString('vi-VN');
-  };
 
   return (
     <motion.div
@@ -87,12 +83,6 @@ const MarketCard: React.FC<MarketCardProps> = ({ symbol, name, price, change, ch
             {isPositive ? '+' : ''}{changePercent.toFixed(2)}%
           </span>
         </div>
-        {/* Volume */}
-        {volume !== undefined && volume > 0 && (
-          <p className="text-xs text-muted-foreground mt-2">
-            KL: <span className="font-mono text-foreground">{formatVolume(volume)}</span>
-          </p>
-        )}
       </div>
 
       {/* Mini chart (stable, no motion) */}
@@ -192,36 +182,16 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
       UPCOM: isVi ? 'Sàn UPCOM' : 'UPCOM Exchange',
     };
 
-    // Get both indices (VNINDEX, VN30) and volumes
-    const vnIndex = (indices || []).find((i) => i.symbol === 'VNINDEX');
-    const vn30 = (indices || []).find((i) => i.symbol === 'VN30');
-
-    // 4 cards: VNINDEX, VNINDEX Volume, VN30, VN30 Volume
-    const cards: MarketCardProps[] = [];
-
-    if (vnIndex) {
-      cards.push({
-        symbol: 'VN-INDEX',
-        name: nameBySymbol.VNINDEX,
-        price: (vnIndex.price ?? 0).toLocaleString('vi-VN', { maximumFractionDigits: 2 }),
-        change: Number(vnIndex.change ?? 0),
-        changePercent: Number(vnIndex.changePercent ?? 0),
-        volume: vnIndex.volume ?? 0,
-      });
-    }
-
-    if (vn30) {
-      cards.push({
-        symbol: 'VN30',
-        name: nameBySymbol.VN30,
-        price: (vn30.price ?? 0).toLocaleString('vi-VN', { maximumFractionDigits: 2 }),
-        change: Number(vn30.change ?? 0),
-        changePercent: Number(vn30.changePercent ?? 0),
-        volume: vn30.volume ?? 0,
-      });
-    }
-
-    return cards;
+    return (indices || [])
+      .filter((i) => ['VNINDEX', 'VN30'].includes(i.symbol))
+      .map((i) => ({
+        symbol: formatIndexSymbol(i.symbol),
+        name: nameBySymbol[i.symbol] ?? i.symbol,
+        price: (i.price ?? 0).toLocaleString('vi-VN', { maximumFractionDigits: 2 }),
+        change: Number(i.change ?? 0),
+        changePercent: Number(i.changePercent ?? 0),
+        volume: i.volume ?? 0,
+      }));
   }, [indices, isVi]);
 
   // VN30 stocks - load every 20 minutes
@@ -239,12 +209,6 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
     VNM: { vi: 'Vinamilk', en: 'Vinamilk JSC' },
   };
 
-  // Format price with proper Vietnamese format (e.g., 57.100đ)
-  const formatStockPrice = (price: number): string => {
-    if (!price) return '—';
-    return price.toLocaleString('vi-VN', { minimumFractionDigits: 0, maximumFractionDigits: 0 }).replace(/,/g, '.');
-  };
-
   const watchlistData = useMemo(() => {
     return vn30Symbols.map((sym) => {
       const priceData = vn30Prices.find((p) => p.symbol === sym);
@@ -252,7 +216,7 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
       return {
         symbol: sym,
         name: isVi ? names.vi : names.en,
-        price: priceData ? formatStockPrice(priceData.price) : '—',
+        price: priceData ? priceData.price.toLocaleString('vi-VN') : '—',
         change: priceData ? priceData.changePercent : 0,
       };
     });
@@ -291,6 +255,39 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
         </div>
       </motion.div>
 
+      {/* Stats Grid - Real-time from indices (chỉ HOSE & VN30 có dữ liệu ổn định) */}
+      {(() => {
+        const vnIndex = indices.find((i) => i.symbol === 'VNINDEX');
+        const vn30 = indices.find((i) => i.symbol === 'VN30');
+
+        const formatVolume = (vol: number) => {
+          if (!vol) return '—';
+          if (vol >= 1e9) return `${(vol / 1e9).toFixed(1)}B`;
+          if (vol >= 1e6) return `${(vol / 1e6).toFixed(1)}M`;
+          return vol.toLocaleString('vi-VN');
+        };
+
+        return (
+          <div className="grid grid-cols-2 gap-4">
+            <StatCard
+              icon={<Activity size={18} className="text-primary" />}
+              label={isVi ? 'KL khớp HOSE' : 'HOSE Volume'}
+              value={formatVolume(vnIndex?.volume || 0)}
+              subValue={vnIndex ? `${Number(vnIndex.changePercent) >= 0 ? '+' : ''}${vnIndex.changePercent}%` : '—'}
+              trend={Number(vnIndex?.changePercent) >= 0 ? 'up' : 'down'}
+              delay={0.1}
+            />
+            <StatCard
+              icon={<Banknote size={18} className="text-success" />}
+              label={isVi ? 'KL khớp VN30' : 'VN30 Volume'}
+              value={formatVolume(vn30?.volume || 0)}
+              subValue={vn30 ? `${Number(vn30.changePercent) >= 0 ? '+' : ''}${vn30.changePercent}%` : '—'}
+              trend={Number(vn30?.changePercent) >= 0 ? 'up' : 'down'}
+              delay={0.15}
+            />
+          </div>
+        );
+      })()}
 
       {/* Market Cards Grid - Vietnamese Indices */}
       <div>
@@ -302,19 +299,13 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
             {isVi ? 'Xem tất cả' : 'View All'}
           </button>
         </div>
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {marketData.map((market, index) => (
             <MarketCard
               key={market.symbol}
               {...market}
               delay={0.1 * index}
             />
-          ))}
-          {/* Fill to 4 cards if needed - empty placeholders */}
-          {marketData.length < 4 && Array.from({ length: 4 - marketData.length }).map((_, i) => (
-            <div key={`placeholder-${i}`} className="glass rounded-2xl p-5 border border-border/30 opacity-50">
-              <p className="text-muted-foreground text-sm">{isVi ? 'Đang tải...' : 'Loading...'}</p>
-            </div>
           ))}
         </div>
       </div>
