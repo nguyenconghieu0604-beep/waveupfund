@@ -556,7 +556,7 @@ async function getPriceDepth(req: Request, url: URL) {
   return new Response(JSON.stringify(finalResult), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 }
 
-// Get market indices - REAL-TIME from GraphQL
+// Get market indices - derived from OHLC (consistent with chart)
 async function getMarketIndices() {
   const cacheKey = 'indices';
   const cached = getCached(cacheKey, CACHE_TTL['indices']);
@@ -564,106 +564,85 @@ async function getMarketIndices() {
     return new Response(JSON.stringify(cached), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   }
 
-  console.log('[VN-Stock] Fetching real-time indices via GraphQL');
+  const symbols = ['VNINDEX', 'HNXINDEX', 'VN30', 'UPCOM'];
+  const to = Math.floor(Date.now() / 1000);
 
-  // In practice, index codes can vary by provider/version.
-  // We query a superset and then map to canonical symbols.
-  const requestedCodes = ['VNINDEX', 'VN30', 'HNXINDEX', 'HNX', 'UPINDEX', 'UPCOM'];
+  const fetchLastTwoDaily = async (symbol: string) => {
+    const payload = {
+      timeFrame: 'ONE_DAY',
+      symbols: [symbol],
+      to,
+      countBack: 2,
+    };
 
-  const payload = {
-    query: `{
-      MarketPriceBoard(codes: ${JSON.stringify(requestedCodes)}) {
-        stockSymbol
-        matchedPrice
-        priceChange
-        priceChangePercent
-        accumulatedVolume
-        accumulatedValue
-        refPrice
-        highPrice
-        lowPrice
-        openPrice
-        ceiling
-        floor
+    const res = await fetch(`${VCI_TRADING_URL}chart/OHLCChart/gap-chart`, {
+      method: 'POST',
+      headers: vciHeaders,
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) throw new Error(`VCI API error: ${res.status}`);
+
+    const data = await res.json();
+    const s = Array.isArray(data) ? data?.[0] : null;
+    if (!s || !Array.isArray(s?.c) || s.c.length === 0) return null;
+
+    const len = s.c.length;
+    const lastClose = Number(s.c[len - 1]) / 1000;
+    const prevClose = len >= 2 ? Number(s.c[len - 2]) / 1000 : lastClose;
+
+    return {
+      price: lastClose,
+      change: lastClose - prevClose,
+      changePercent: prevClose ? ((lastClose - prevClose) / prevClose) * 100 : 0,
+      volume: Number(s.v?.[len - 1]) || 0,
+      ref: prevClose,
+      open: Number(s.o?.[len - 1]) / 1000,
+      high: Number(s.h?.[len - 1]) / 1000,
+      low: Number(s.l?.[len - 1]) / 1000,
+    };
+  };
+
+  console.log('[VN-Stock] Indices: fetching OHLC for VNINDEX/HNXINDEX/VN30/UPCOM');
+
+  const results = await Promise.all(
+    symbols.map(async (symbol) => {
+      try {
+        const ohlc = await fetchLastTwoDaily(symbol);
+        if (!ohlc) return null;
+        return {
+          symbol,
+          price: ohlc.price,
+          change: ohlc.change,
+          changePercent: ohlc.changePercent.toFixed(2),
+          volume: ohlc.volume,
+          ref: ohlc.ref,
+          open: ohlc.open,
+          high: ohlc.high,
+          low: ohlc.low,
+        };
+      } catch (e) {
+        console.error('[VN-Stock] Indices OHLC error:', symbol, e instanceof Error ? e.message : String(e));
+        return null;
       }
-    }`,
-    variables: {},
-  };
+    }),
+  );
 
-  const response = await fetch(VCI_GRAPHQL_URL, {
-    method: 'POST',
-    headers: vciHeaders,
-    body: JSON.stringify(payload),
-  });
-
-  if (!response.ok) {
-    console.error(`[VN-Stock] GraphQL error: ${response.status}`);
-    throw new Error(`VCI GraphQL error: ${response.status}`);
-  }
-
-  const responseData = await response.json();
-  const rows = responseData?.data?.MarketPriceBoard || [];
-
-  // Normalize numbers: some codes return values already in "index points" (e.g., 1,250)
-  // while equities are often encoded x1000 (e.g., 61,500). We correct using a simple heuristic.
-  const norm = (v: any) => {
-    const n = Number(v);
-    if (!Number.isFinite(n)) return 0;
-    return n > 100000 ? n / 1000 : n;
-  };
-
-  const bySymbol = new Map<string, any>();
-  for (const r of rows) {
-    if (r?.stockSymbol) bySymbol.set(String(r.stockSymbol).toUpperCase(), r);
-  }
-
-  const pick = (codes: string[]) => {
-    for (const c of codes) {
-      const row = bySymbol.get(c.toUpperCase());
-      if (row) return row;
-    }
-    return null;
-  };
-
-  const canonical = [
-    { symbol: 'VNINDEX', aliases: ['VNINDEX'] },
-    { symbol: 'VN30', aliases: ['VN30'] },
-    { symbol: 'HNXINDEX', aliases: ['HNXINDEX', 'HNX'] },
-    { symbol: 'UPCOM', aliases: ['UPINDEX', 'UPCOM'] },
-  ];
-
-  const indices = canonical
-    .map(({ symbol, aliases }) => {
-      const item = pick(aliases);
-      if (!item) return null;
-
-      return {
-        symbol,
-        price: norm(item.matchedPrice),
-        change: norm(item.priceChange),
-        changePercent: (Number(item.priceChangePercent) || 0).toFixed(2),
-        volume: Number(item.accumulatedVolume) || 0,
-        value: Number(item.accumulatedValue) || 0,
-        ref: norm(item.refPrice),
-        open: norm(item.openPrice),
-        high: norm(item.highPrice),
-        low: norm(item.lowPrice),
-      };
-    })
-    .filter(Boolean);
+  const indices = results.filter(Boolean);
 
   const result = {
     data: indices,
     count: indices.length,
     marketOpen: isMarketOpen(),
     timestamp: Date.now(),
+    source: 'ohlc',
   };
 
   setCache(cacheKey, result);
 
   console.log(
-    `[VN-Stock] Real-time Indices:`,
-    indices.map((i: any) => `${i.symbol}: ${i.price}`).join(', '),
+    '[VN-Stock] Indices (OHLC):',
+    indices.map((i: any) => `${i.symbol}: ${Number(i.price).toFixed(2)}`).join(', '),
   );
 
   return new Response(JSON.stringify(result), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
