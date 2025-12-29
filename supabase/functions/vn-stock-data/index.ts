@@ -360,7 +360,7 @@ async function getSymbolsByGroup(url: URL) {
   return new Response(JSON.stringify(result), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 }
 
-// Get real-time price board (optimized for speed)
+// Get real-time price board using OHLC API (stable fallback)
 async function getPriceBoard(req: Request, url: URL) {
   let symbols: string[] = [];
   
@@ -382,103 +382,115 @@ async function getPriceBoard(req: Request, url: URL) {
     return new Response(JSON.stringify(cached), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   }
 
-  console.log(`[VN-Stock] Price board: ${symbols.join(', ')}`);
+  console.log(`[VN-Stock] Price board (OHLC): ${symbols.join(', ')}`);
 
+  // Use OHLC API which is more stable than GraphQL
+  const now = new Date();
+  const endStamp = Math.floor(now.getTime() / 1000);
+  
   const payload = {
-    query: `{
-      MarketPriceBoard(codes: ${JSON.stringify(symbols)}) {
-        stockNo
-        ceiling
-        floor
-        refPrice
-        stockSymbol
-        matchedPrice
-        matchedVolume
-        matchedBy
-        priceChange
-        priceChangePercent
-        highPrice
-        lowPrice
-        foreignBuyVolume
-        foreignSellVolume
-        totalRoom
-        currentRoom
-        openPrice
-        accumulatedVolume
-        accumulatedValue
-        buyForeignQuantity
-        sellForeignQuantity
-        matchedValue
-        buyPrice1
-        buyVolume1
-        buyPrice2
-        buyVolume2
-        buyPrice3
-        buyVolume3
-        sellPrice1
-        sellVolume1
-        sellPrice2
-        sellVolume2
-        sellPrice3
-        sellVolume3
-        __typename
+    timeFrame: 'ONE_DAY',
+    symbols: symbols.map(s => s.toUpperCase()),
+    to: endStamp,
+    countBack: 2 // Get last 2 days to calculate change
+  };
+
+  try {
+    const response = await fetch(`${VCI_TRADING_URL}chart/OHLCChart/gap-chart`, {
+      method: 'POST',
+      headers: vciHeaders,
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      throw new Error(`VCI OHLC API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const transformed: any[] = [];
+
+    if (Array.isArray(data)) {
+      for (const symbolData of data) {
+        if (symbolData && symbolData.t && symbolData.t.length > 0) {
+          const lastIdx = symbolData.t.length - 1;
+          const prevIdx = lastIdx > 0 ? lastIdx - 1 : lastIdx;
+          
+          const currentClose = symbolData.c[lastIdx] / 1000;
+          const prevClose = symbolData.c[prevIdx] / 1000;
+          const change = currentClose - prevClose;
+          const changePercent = prevClose > 0 ? ((change / prevClose) * 100) : 0;
+
+          transformed.push({
+            symbol: symbolData.symbol || symbols[data.indexOf(symbolData)],
+            price: currentClose,
+            change: change,
+            changePercent: changePercent,
+            ceiling: 0, // Not available from OHLC
+            floor: 0,
+            ref: prevClose,
+            open: symbolData.o[lastIdx] / 1000,
+            high: symbolData.h[lastIdx] / 1000,
+            low: symbolData.l[lastIdx] / 1000,
+            volume: symbolData.v[lastIdx],
+            value: 0,
+            foreignBuy: 0,
+            foreignSell: 0,
+            room: 0,
+            matchedVolume: symbolData.v[lastIdx],
+            matchedBy: '',
+            bid: [],
+            ask: []
+          });
+        }
       }
-    }`,
-    variables: {}
-  };
+    }
 
-  const response = await fetch(VCI_GRAPHQL_URL, {
-    method: 'POST',
-    headers: vciHeaders,
-    body: JSON.stringify(payload)
-  });
+    const finalResult = { 
+      data: transformed, 
+      count: transformed.length,
+      marketOpen: isMarketOpen(),
+      timestamp: Date.now(),
+      source: 'ohlc'
+    };
+    setCache(cacheKey, finalResult);
 
-  if (!response.ok) {
-    throw new Error(`VCI GraphQL error: ${response.status}`);
+    return new Response(JSON.stringify(finalResult), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+  } catch (err) {
+    // Return empty result instead of error to not break UI
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[VN-Stock] Price board error:', msg);
+    
+    const emptyResult = {
+      data: symbols.map(s => ({
+        symbol: s,
+        price: 0,
+        change: 0,
+        changePercent: 0,
+        ceiling: 0,
+        floor: 0,
+        ref: 0,
+        open: 0,
+        high: 0,
+        low: 0,
+        volume: 0,
+        value: 0,
+        foreignBuy: 0,
+        foreignSell: 0,
+        room: 0,
+        matchedVolume: 0,
+        matchedBy: '',
+        bid: [],
+        ask: []
+      })),
+      count: symbols.length,
+      marketOpen: isMarketOpen(),
+      timestamp: Date.now(),
+      source: 'fallback',
+      error: msg
+    };
+    
+    return new Response(JSON.stringify(emptyResult), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   }
-
-  const result = await response.json();
-  const priceData = result.data?.MarketPriceBoard || [];
-
-  const transformed = priceData.map((item: any) => ({
-    symbol: item.stockSymbol,
-    price: item.matchedPrice / 1000,
-    change: item.priceChange / 1000,
-    changePercent: item.priceChangePercent,
-    ceiling: item.ceiling / 1000,
-    floor: item.floor / 1000,
-    ref: item.refPrice / 1000,
-    open: item.openPrice / 1000,
-    high: item.highPrice / 1000,
-    low: item.lowPrice / 1000,
-    volume: item.accumulatedVolume,
-    value: item.accumulatedValue,
-    foreignBuy: item.foreignBuyVolume,
-    foreignSell: item.foreignSellVolume,
-    room: item.currentRoom,
-    matchedVolume: item.matchedVolume,
-    matchedBy: item.matchedBy, // 'B' = Buy, 'S' = Sell
-    bid: [
-      { price: item.buyPrice1 / 1000, volume: item.buyVolume1 },
-      { price: item.buyPrice2 / 1000, volume: item.buyVolume2 },
-      { price: item.buyPrice3 / 1000, volume: item.buyVolume3 }
-    ],
-    ask: [
-      { price: item.sellPrice1 / 1000, volume: item.sellVolume1 },
-      { price: item.sellPrice2 / 1000, volume: item.sellVolume2 },
-      { price: item.sellPrice3 / 1000, volume: item.sellVolume3 }
-    ]
-  }));
-
-  const finalResult = { 
-    data: transformed, 
-    count: transformed.length,
-    marketOpen: isMarketOpen(),
-    timestamp: Date.now()
-  };
-  setCache(cacheKey, finalResult);
-
-  return new Response(JSON.stringify(finalResult), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 }
 
 // Get price depth (bid/ask only - ultra fast)
