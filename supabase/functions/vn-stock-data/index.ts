@@ -564,22 +564,11 @@ async function getMarketIndices() {
     return new Response(JSON.stringify(cached), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   }
 
-  console.log('[VN-Stock] Indices: fetching via REST API');
+  console.log('[VN-Stock] Indices: fetching via OHLC (stable)');
 
-  // Use the price/symbols API with index codes
-  const indexCodes = ['VNINDEX', 'HNX', 'VN30', 'UPCOM'];
-  
   try {
-    // Try fetching index data via the market-watch or similar endpoint
-    const url = `${VCI_TRADING_URL}price/symbols/getByGroup?group=VNINDEX`;
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: vciHeaders,
-    });
-
-    // If group endpoint fails, fall back to direct OHLC with proper scaling
     const indices = await fetchIndicesViaOHLC();
-    
+
     const result = {
       data: indices,
       count: indices.length,
@@ -597,8 +586,20 @@ async function getMarketIndices() {
 
     return new Response(JSON.stringify(result), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   } catch (err) {
-    console.error('[VN-Stock] Indices error:', err instanceof Error ? err.message : String(err));
-    throw err;
+    // Never hard-fail the UI: return empty payload with error info
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[VN-Stock] Indices error:', msg);
+
+    const result = {
+      data: [],
+      count: 0,
+      marketOpen: isMarketOpen(),
+      timestamp: Date.now(),
+      source: 'ohlc-scaled',
+      error: msg,
+    };
+
+    return new Response(JSON.stringify(result), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   }
 }
 
