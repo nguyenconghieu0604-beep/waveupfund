@@ -388,21 +388,139 @@ async function processBatch(): Promise<void> {
 }
 
 // ============================================================================
-// MARKET STATUS
+// VIETNAM STOCK MARKET TRADING HOURS
+// Trading hours: 9:00 - 15:00, Monday - Friday (UTC+7)
+// Morning session: 9:00 - 11:30
+// Lunch break: 11:30 - 13:00  
+// Afternoon session: 13:00 - 14:45
+// ATC (Closing auction): 14:45 - 15:00
 // ============================================================================
 
-function isMarketOpen(): boolean {
+interface MarketStatus {
+  isOpen: boolean;
+  session: 'PRE_MARKET' | 'MORNING' | 'LUNCH_BREAK' | 'AFTERNOON' | 'ATC' | 'CLOSED' | 'WEEKEND';
+  nextOpen?: string;
+  vnTime: string;
+}
+
+function getVietnamTime(): Date {
   const now = new Date();
-  const vnTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Ho_Chi_Minh' }));
+  // Convert to Vietnam timezone (UTC+7)
+  const vnOffset = 7 * 60; // Vietnam is UTC+7
+  const utcTime = now.getTime() + now.getTimezoneOffset() * 60 * 1000;
+  return new Date(utcTime + vnOffset * 60 * 1000);
+}
+
+function getMarketStatus(): MarketStatus {
+  const vnTime = getVietnamTime();
+  const hours = vnTime.getHours();
+  const minutes = vnTime.getMinutes();
+  const day = vnTime.getDay(); // 0 = Sunday, 6 = Saturday
+  const time = hours * 60 + minutes;
+  
+  const vnTimeStr = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+  
+  // Weekend check (Saturday = 6, Sunday = 0)
+  if (day === 0 || day === 6) {
+    return { 
+      isOpen: false, 
+      session: 'WEEKEND', 
+      nextOpen: 'Monday 9:00 AM',
+      vnTime: vnTimeStr
+    };
+  }
+  
+  // Pre-market: before 9:00
+  if (time < 540) {
+    return { 
+      isOpen: false, 
+      session: 'PRE_MARKET', 
+      nextOpen: '9:00 AM today',
+      vnTime: vnTimeStr
+    };
+  }
+  
+  // Morning session: 9:00 - 11:30
+  if (time >= 540 && time < 690) {
+    return { isOpen: true, session: 'MORNING', vnTime: vnTimeStr };
+  }
+  
+  // Lunch break: 11:30 - 13:00
+  if (time >= 690 && time < 780) {
+    return { 
+      isOpen: false, 
+      session: 'LUNCH_BREAK', 
+      nextOpen: '1:00 PM today',
+      vnTime: vnTimeStr
+    };
+  }
+  
+  // Afternoon session: 13:00 - 14:45
+  if (time >= 780 && time < 885) {
+    return { isOpen: true, session: 'AFTERNOON', vnTime: vnTimeStr };
+  }
+  
+  // ATC (Closing auction): 14:45 - 15:00
+  if (time >= 885 && time < 900) {
+    return { isOpen: true, session: 'ATC', vnTime: vnTimeStr };
+  }
+  
+  // After market: 15:00+
+  return { 
+    isOpen: false, 
+    session: 'CLOSED', 
+    nextOpen: 'Tomorrow 9:00 AM',
+    vnTime: vnTimeStr
+  };
+}
+
+// Simple check for backward compatibility
+function isMarketOpen(): boolean {
+  return getMarketStatus().isOpen;
+}
+
+// Check if we should sync realtime data (only during trading hours + buffer)
+function shouldSyncRealtimeData(): boolean {
+  const vnTime = getVietnamTime();
   const hours = vnTime.getHours();
   const minutes = vnTime.getMinutes();
   const day = vnTime.getDay();
+  const time = hours * 60 + minutes;
   
+  // No sync on weekends
   if (day === 0 || day === 6) return false;
   
-  const time = hours * 60 + minutes;
-  // Morning: 9:00-11:30, Afternoon: 13:00-14:45 (ATC until 15:00)
-  return (time >= 540 && time <= 690) || (time >= 780 && time <= 900);
+  // Sync from 8:45 (pre-market buffer) to 15:15 (post-market buffer)
+  // This gives 15 min buffer before/after market hours
+  return time >= 525 && time <= 915;
+}
+
+// Get appropriate cache TTL based on market status
+function getDynamicCacheTTL(action: string): number {
+  const status = getMarketStatus();
+  const baseTTL = CACHE_TTL[action] || 5000;
+  
+  // During market hours: use normal TTL
+  if (status.isOpen) {
+    return baseTTL;
+  }
+  
+  // Lunch break: slightly longer TTL
+  if (status.session === 'LUNCH_BREAK') {
+    return baseTTL * 5; // 5x longer
+  }
+  
+  // Outside trading hours: much longer TTL (data won't change)
+  // Weekend: 1 hour, After hours: 10 minutes
+  if (status.session === 'WEEKEND') {
+    return 3600000; // 1 hour
+  }
+  
+  if (status.session === 'CLOSED' || status.session === 'PRE_MARKET') {
+    return 600000; // 10 minutes
+  }
+  
+  return baseTTL;
 }
 
 // ============================================================================
@@ -474,8 +592,9 @@ serve(async (req: Request) => {
     }
 
     metric.action = action || 'unknown';
-    const marketStatus = isMarketOpen() ? 'OPEN' : 'CLOSED';
-    console.log(`[VN-Stock] Action: ${action} | Market: ${marketStatus}`);
+    const status = getMarketStatus();
+    const shouldSync = shouldSyncRealtimeData();
+    console.log(`[VN-Stock] Action: ${action} | Session: ${status.session} | VN Time: ${status.vnTime} | Sync: ${shouldSync}`);
 
     let response: Response;
     switch (action) {
@@ -483,6 +602,10 @@ serve(async (req: Request) => {
         response = await getStockHistory(url, metric);
         break;
       case 'intraday':
+        // For intraday, only fetch fresh data during trading hours
+        if (!shouldSync && action === 'intraday') {
+          console.log(`[VN-Stock] Intraday data requested outside trading hours - returning cached/stale data`);
+        }
         response = await getIntradayData(url, metric);
         break;
       case 'symbols':
@@ -504,7 +627,8 @@ serve(async (req: Request) => {
         metric.success = true;
         response = new Response(
           JSON.stringify({ 
-            isOpen: isMarketOpen(), 
+            ...status,
+            shouldSync,
             timestamp: Date.now(),
             metrics: getMetricsSummary()
           }),
@@ -641,7 +765,8 @@ async function getIntradayData(url: URL, metric: RequestMetrics) {
   const interval = url.searchParams.get('interval') || '1m';
 
   const cacheKey = `intraday:${symbol}:${interval}`;
-  const cached = getCached(cacheKey, CACHE_TTL['intraday']);
+  const dynamicTTL = getDynamicCacheTTL('intraday');
+  const cached = getCached(cacheKey, dynamicTTL);
   if (cached) {
     metric.cacheHit = true;
     metric.success = true;
@@ -696,12 +821,15 @@ async function getIntradayData(url: URL, metric: RequestMetrics) {
       }
     }
 
+    const status = getMarketStatus();
     return { 
       symbol, 
       interval,
       data: ohlcv, 
       count: ohlcv.length,
-      marketOpen: isMarketOpen(),
+      marketOpen: status.isOpen,
+      session: status.session,
+      vnTime: status.vnTime,
       timestamp: Date.now()
     };
   });
@@ -875,7 +1003,8 @@ async function getPriceBoard(req: Request, url: URL, metric: RequestMetrics) {
 
   const sortedSymbols = [...symbols].sort();
   const cacheKey = `priceboard:${sortedSymbols.join(',')}`;
-  const cached = getCached(cacheKey, CACHE_TTL['price-board']);
+  const dynamicTTL = getDynamicCacheTTL('price-board');
+  const cached = getCached(cacheKey, dynamicTTL);
   if (cached) {
     metric.cacheHit = true;
     metric.success = true;
@@ -888,10 +1017,13 @@ async function getPriceBoard(req: Request, url: URL, metric: RequestMetrics) {
     // Use batched request for efficiency
     const transformed = await batchedPriceRequest(symbols);
 
+    const status = getMarketStatus();
     const finalResult = { 
       data: transformed, 
       count: transformed.length,
-      marketOpen: isMarketOpen(),
+      marketOpen: status.isOpen,
+      session: status.session,
+      vnTime: status.vnTime,
       timestamp: Date.now(),
       source: 'ohlc-batched'
     };
@@ -954,7 +1086,8 @@ async function getPriceDepth(req: Request, url: URL, metric: RequestMetrics) {
   }
 
   const cacheKey = `depth:${symbols.sort().join(',')}`;
-  const cached = getCached(cacheKey, CACHE_TTL['price-depth']);
+  const dynamicTTL = getDynamicCacheTTL('price-depth');
+  const cached = getCached(cacheKey, dynamicTTL);
   if (cached) {
     metric.cacheHit = true;
     metric.success = true;
@@ -1019,7 +1152,8 @@ async function getPriceDepth(req: Request, url: URL, metric: RequestMetrics) {
 
 async function getMarketIndices(metric: RequestMetrics) {
   const cacheKey = 'indices';
-  const cached = getCached(cacheKey, CACHE_TTL['indices']);
+  const dynamicTTL = getDynamicCacheTTL('indices');
+  const cached = getCached(cacheKey, dynamicTTL);
   if (cached) {
     metric.cacheHit = true;
     metric.success = true;
@@ -1030,11 +1164,14 @@ async function getMarketIndices(metric: RequestMetrics) {
 
   try {
     const indices = await fetchIndicesViaOHLC();
+    const status = getMarketStatus();
 
     const result = {
       data: indices,
       count: indices.length,
-      marketOpen: isMarketOpen(),
+      marketOpen: status.isOpen,
+      session: status.session,
+      vnTime: status.vnTime,
       timestamp: Date.now(),
       source: 'ohlc-scaled',
     };
@@ -1053,10 +1190,13 @@ async function getMarketIndices(metric: RequestMetrics) {
     console.error('[VN-Stock] Indices error:', msg);
     metric.error = msg;
 
+    const status = getMarketStatus();
     const result = {
       data: [],
       count: 0,
-      marketOpen: isMarketOpen(),
+      marketOpen: status.isOpen,
+      session: status.session,
+      vnTime: status.vnTime,
       timestamp: Date.now(),
       source: 'ohlc-scaled',
       error: msg,
