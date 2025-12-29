@@ -1,6 +1,10 @@
 // deno-lint-ignore-file no-explicit-any
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 
+// ============================================================================
+// CONFIGURATION - Trading Platform Grade
+// ============================================================================
+
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
@@ -21,75 +25,372 @@ const INTERVAL_MAP: Record<string, string> = {
   '1M': 'ONE_DAY'
 };
 
-// In-memory cache for reducing API calls
-const cache = new Map<string, { data: any; timestamp: number }>();
-const CACHE_TTL = {
+// ============================================================================
+// ADVANCED CACHING SYSTEM - Multi-tier with TTL management
+// ============================================================================
+
+interface CacheEntry {
+  data: any;
+  timestamp: number;
+  hitCount: number;
+  lastAccess: number;
+}
+
+const cache = new Map<string, CacheEntry>();
+
+const CACHE_TTL: Record<string, number> = {
   'price-board': 2000,      // 2s for price board (near real-time)
+  'price-depth': 1500,      // 1.5s for order book depth
   'intraday': 3000,         // 3s for intraday data
-  'history': 60000,         // 1min for historical data
+  'history': 300000,        // 5min for historical data (increased for stability)
   'indices': 3000,          // 3s for indices
-  'symbols': 300000,        // 5min for symbol lists
+  'symbols': 600000,        // 10min for symbol lists (rarely changes)
 };
+
+// Cache statistics for monitoring
+const cacheStats = {
+  hits: 0,
+  misses: 0,
+  evictions: 0,
+};
+
+const MAX_CACHE_SIZE = 500; // Maximum cache entries
 
 function getCached(key: string, ttl: number): any | null {
   const cached = cache.get(key);
   if (cached && Date.now() - cached.timestamp < ttl) {
-    console.log(`[VN-Stock] Cache HIT: ${key}`);
+    cached.hitCount++;
+    cached.lastAccess = Date.now();
+    cacheStats.hits++;
     return cached.data;
   }
+  cacheStats.misses++;
   return null;
 }
 
 function setCache(key: string, data: any): void {
-  cache.set(key, { data, timestamp: Date.now() });
+  // LRU eviction if cache is full
+  if (cache.size >= MAX_CACHE_SIZE) {
+    let oldestKey = '';
+    let oldestAccess = Infinity;
+    for (const [k, v] of cache) {
+      if (v.lastAccess < oldestAccess) {
+        oldestAccess = v.lastAccess;
+        oldestKey = k;
+      }
+    }
+    if (oldestKey) {
+      cache.delete(oldestKey);
+      cacheStats.evictions++;
+    }
+  }
+  
+  cache.set(key, { 
+    data, 
+    timestamp: Date.now(),
+    hitCount: 0,
+    lastAccess: Date.now()
+  });
 }
+
+// ============================================================================
+// CIRCUIT BREAKER - Prevent cascade failures
+// ============================================================================
+
+interface CircuitState {
+  failures: number;
+  lastFailure: number;
+  state: 'CLOSED' | 'OPEN' | 'HALF_OPEN';
+}
+
+const circuits: Record<string, CircuitState> = {};
+
+const CIRCUIT_CONFIG = {
+  failureThreshold: 5,      // Open after 5 failures
+  resetTimeout: 30000,      // Try again after 30s
+  halfOpenSuccesses: 2,     // Close after 2 successes in half-open
+};
+
+function getCircuit(name: string): CircuitState {
+  if (!circuits[name]) {
+    circuits[name] = { failures: 0, lastFailure: 0, state: 'CLOSED' };
+  }
+  return circuits[name];
+}
+
+function recordSuccess(name: string): void {
+  const circuit = getCircuit(name);
+  if (circuit.state === 'HALF_OPEN') {
+    circuit.failures--;
+    if (circuit.failures <= 0) {
+      circuit.state = 'CLOSED';
+      circuit.failures = 0;
+      console.log(`[Circuit] ${name}: CLOSED (recovered)`);
+    }
+  } else {
+    circuit.failures = 0;
+  }
+}
+
+function recordFailure(name: string): void {
+  const circuit = getCircuit(name);
+  circuit.failures++;
+  circuit.lastFailure = Date.now();
+  
+  if (circuit.failures >= CIRCUIT_CONFIG.failureThreshold) {
+    circuit.state = 'OPEN';
+    console.log(`[Circuit] ${name}: OPEN (threshold reached)`);
+  }
+}
+
+function canRequest(name: string): boolean {
+  const circuit = getCircuit(name);
+  
+  if (circuit.state === 'CLOSED') return true;
+  
+  if (circuit.state === 'OPEN') {
+    if (Date.now() - circuit.lastFailure >= CIRCUIT_CONFIG.resetTimeout) {
+      circuit.state = 'HALF_OPEN';
+      console.log(`[Circuit] ${name}: HALF_OPEN (testing)`);
+      return true;
+    }
+    return false;
+  }
+  
+  return true; // HALF_OPEN
+}
+
+// ============================================================================
+// RATE LIMITER - Protect upstream API
+// ============================================================================
+
+interface RateLimitState {
+  tokens: number;
+  lastRefill: number;
+}
+
+const rateLimits: Record<string, RateLimitState> = {};
+
+const RATE_LIMIT_CONFIG = {
+  maxTokens: 30,           // Max requests per window
+  refillRate: 10,          // Tokens per second
+  refillInterval: 1000,    // Refill every second
+};
+
+function checkRateLimit(bucket: string): boolean {
+  const now = Date.now();
+  
+  if (!rateLimits[bucket]) {
+    rateLimits[bucket] = { tokens: RATE_LIMIT_CONFIG.maxTokens, lastRefill: now };
+  }
+  
+  const state = rateLimits[bucket];
+  
+  // Refill tokens
+  const timePassed = now - state.lastRefill;
+  const tokensToAdd = Math.floor(timePassed / RATE_LIMIT_CONFIG.refillInterval) * RATE_LIMIT_CONFIG.refillRate;
+  
+  if (tokensToAdd > 0) {
+    state.tokens = Math.min(RATE_LIMIT_CONFIG.maxTokens, state.tokens + tokensToAdd);
+    state.lastRefill = now;
+  }
+  
+  // Check if we have tokens
+  if (state.tokens > 0) {
+    state.tokens--;
+    return true;
+  }
+  
+  console.log(`[RateLimit] ${bucket}: throttled`);
+  return false;
+}
+
+// ============================================================================
+// REQUEST DEDUPLICATION - Prevent duplicate in-flight requests
+// ============================================================================
+
+const pendingRequests = new Map<string, Promise<any>>();
+
+async function deduplicatedFetch<T>(
+  key: string,
+  fetchFn: () => Promise<T>
+): Promise<T> {
+  // Check if there's already a pending request for this key
+  const pending = pendingRequests.get(key);
+  if (pending) {
+    console.log(`[Dedup] Reusing pending request: ${key.substring(0, 50)}...`);
+    return pending as Promise<T>;
+  }
+  
+  // Create new request and store it
+  const promise = fetchFn().finally(() => {
+    pendingRequests.delete(key);
+  });
+  
+  pendingRequests.set(key, promise);
+  return promise;
+}
+
+// ============================================================================
+// HTTP CLIENT - With retry, timeout, compression
+// ============================================================================
 
 const vciHeaders = {
   'Content-Type': 'application/json',
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
   'Accept': 'application/json',
+  'Accept-Encoding': 'gzip, deflate',
   'Origin': 'https://trading.vietcap.com.vn',
   'Referer': 'https://trading.vietcap.com.vn/',
   'Connection': 'keep-alive',
 };
 
-// Retry fetch with exponential backoff for handling 502/503 errors
+const FETCH_CONFIG = {
+  timeout: 8000,           // 8s timeout
+  maxRetries: 3,
+  baseDelay: 300,          // Start with 300ms
+  maxDelay: 2000,          // Cap at 2s
+};
+
 async function fetchWithRetry(
   url: string, 
-  options: RequestInit, 
-  maxRetries = 3, 
-  baseDelay = 500
+  options: RequestInit,
+  circuitName?: string
 ): Promise<Response> {
+  const circuit = circuitName || 'default';
+  
+  // Circuit breaker check
+  if (!canRequest(circuit)) {
+    throw new Error(`Circuit ${circuit} is OPEN - request blocked`);
+  }
+  
+  // Rate limit check
+  if (!checkRateLimit(circuit)) {
+    throw new Error(`Rate limit exceeded for ${circuit}`);
+  }
+  
   let lastError: Error | null = null;
   
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
+  for (let attempt = 0; attempt < FETCH_CONFIG.maxRetries; attempt++) {
     try {
-      const response = await fetch(url, options);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), FETCH_CONFIG.timeout);
       
-      // If we get a 502/503/504, retry with backoff
-      if (response.status >= 502 && response.status <= 504 && attempt < maxRetries - 1) {
-        const delay = baseDelay * Math.pow(2, attempt);
-        console.log(`[VN-Stock] Retry ${attempt + 1}/${maxRetries} after ${response.status}, waiting ${delay}ms`);
+      const response = await fetch(url, {
+        ...options,
+        signal: controller.signal,
+      });
+      
+      clearTimeout(timeoutId);
+      
+      // Handle retryable errors
+      if (response.status >= 502 && response.status <= 504 && attempt < FETCH_CONFIG.maxRetries - 1) {
+        const delay = Math.min(
+          FETCH_CONFIG.baseDelay * Math.pow(2, attempt) + Math.random() * 100,
+          FETCH_CONFIG.maxDelay
+        );
+        console.log(`[Fetch] Retry ${attempt + 1}/${FETCH_CONFIG.maxRetries} after ${response.status}, waiting ${delay}ms`);
         await new Promise(resolve => setTimeout(resolve, delay));
         continue;
+      }
+      
+      if (response.ok) {
+        recordSuccess(circuit);
       }
       
       return response;
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
       
-      if (attempt < maxRetries - 1) {
-        const delay = baseDelay * Math.pow(2, attempt);
-        console.log(`[VN-Stock] Retry ${attempt + 1}/${maxRetries} after error: ${lastError.message}, waiting ${delay}ms`);
+      // Don't retry on abort
+      if (lastError.name === 'AbortError') {
+        console.log(`[Fetch] Request timed out after ${FETCH_CONFIG.timeout}ms`);
+        recordFailure(circuit);
+        throw new Error(`Request timeout after ${FETCH_CONFIG.timeout}ms`);
+      }
+      
+      if (attempt < FETCH_CONFIG.maxRetries - 1) {
+        const delay = Math.min(
+          FETCH_CONFIG.baseDelay * Math.pow(2, attempt) + Math.random() * 100,
+          FETCH_CONFIG.maxDelay
+        );
+        console.log(`[Fetch] Retry ${attempt + 1}/${FETCH_CONFIG.maxRetries}: ${lastError.message}, waiting ${delay}ms`);
         await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
   }
   
+  recordFailure(circuit);
   throw lastError || new Error('Fetch failed after retries');
 }
 
-// Check if Vietnam stock market is open
+// ============================================================================
+// BATCH PROCESSING - Combine multiple symbol requests
+// ============================================================================
+
+interface BatchRequest {
+  symbols: string[];
+  resolve: (data: any) => void;
+  reject: (error: Error) => void;
+}
+
+let batchQueue: BatchRequest[] = [];
+let batchTimeout: ReturnType<typeof setTimeout> | null = null;
+
+const BATCH_CONFIG = {
+  maxBatchSize: 50,        // Max symbols per batch
+  batchDelay: 50,          // Wait 50ms to collect requests
+};
+
+async function batchedPriceRequest(symbols: string[]): Promise<any[]> {
+  return new Promise((resolve, reject) => {
+    batchQueue.push({ symbols, resolve, reject });
+    
+    if (batchTimeout === null) {
+      batchTimeout = setTimeout(processBatch, BATCH_CONFIG.batchDelay);
+    }
+    
+    // Force process if batch is full
+    const totalSymbols = batchQueue.reduce((sum, req) => sum + req.symbols.length, 0);
+    if (totalSymbols >= BATCH_CONFIG.maxBatchSize) {
+      if (batchTimeout) clearTimeout(batchTimeout);
+      processBatch();
+    }
+  });
+}
+
+async function processBatch(): Promise<void> {
+  batchTimeout = null;
+  
+  if (batchQueue.length === 0) return;
+  
+  const requests = [...batchQueue];
+  batchQueue = [];
+  
+  // Combine all symbols
+  const allSymbols = [...new Set(requests.flatMap(r => r.symbols))];
+  
+  console.log(`[Batch] Processing ${requests.length} requests, ${allSymbols.length} unique symbols`);
+  
+  try {
+    const data = await fetchPriceBoardData(allSymbols);
+    
+    // Distribute results to each request
+    for (const req of requests) {
+      const filtered = data.filter((d: any) => req.symbols.includes(d.symbol));
+      req.resolve(filtered);
+    }
+  } catch (error) {
+    for (const req of requests) {
+      req.reject(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+}
+
+// ============================================================================
+// MARKET STATUS
+// ============================================================================
+
 function isMarketOpen(): boolean {
   const now = new Date();
   const vnTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Ho_Chi_Minh' }));
@@ -104,12 +405,59 @@ function isMarketOpen(): boolean {
   return (time >= 540 && time <= 690) || (time >= 780 && time <= 900);
 }
 
+// ============================================================================
+// PERFORMANCE METRICS
+// ============================================================================
+
+interface RequestMetrics {
+  action: string;
+  startTime: number;
+  endTime?: number;
+  cacheHit: boolean;
+  success: boolean;
+  error?: string;
+}
+
+const metrics: RequestMetrics[] = [];
+const MAX_METRICS = 100;
+
+function recordMetric(metric: RequestMetrics): void {
+  metric.endTime = Date.now();
+  metrics.push(metric);
+  
+  if (metrics.length > MAX_METRICS) {
+    metrics.shift();
+  }
+}
+
+function getMetricsSummary(): any {
+  if (metrics.length === 0) return null;
+  
+  const recentMetrics = metrics.slice(-50);
+  const avgLatency = recentMetrics.reduce((sum, m) => sum + ((m.endTime || 0) - m.startTime), 0) / recentMetrics.length;
+  const successRate = recentMetrics.filter(m => m.success).length / recentMetrics.length * 100;
+  const cacheHitRate = recentMetrics.filter(m => m.cacheHit).length / recentMetrics.length * 100;
+  
+  return {
+    avgLatency: Math.round(avgLatency),
+    successRate: successRate.toFixed(1),
+    cacheHitRate: cacheHitRate.toFixed(1),
+    totalRequests: metrics.length,
+    cacheStats,
+  };
+}
+
+// ============================================================================
+// MAIN SERVER
+// ============================================================================
+
 serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
 
   const startTime = Date.now();
+  const metric: RequestMetrics = { action: '', startTime, cacheHit: false, success: false };
 
   try {
     const url = new URL(req.url);
@@ -125,48 +473,74 @@ serve(async (req: Request) => {
       }
     }
 
-    console.log(`[VN-Stock] Action: ${action} | Market: ${isMarketOpen() ? 'OPEN' : 'CLOSED'}`);
+    metric.action = action || 'unknown';
+    const marketStatus = isMarketOpen() ? 'OPEN' : 'CLOSED';
+    console.log(`[VN-Stock] Action: ${action} | Market: ${marketStatus}`);
 
     let response: Response;
     switch (action) {
       case 'history':
-        response = await getStockHistory(url);
+        response = await getStockHistory(url, metric);
         break;
       case 'intraday':
-        response = await getIntradayData(url);
+        response = await getIntradayData(url, metric);
         break;
       case 'symbols':
-        response = await getAllSymbols();
+        response = await getAllSymbols(metric);
         break;
       case 'symbols-by-group':
-        response = await getSymbolsByGroup(url);
+        response = await getSymbolsByGroup(url, metric);
         break;
       case 'price-board':
-        response = await getPriceBoard(req, url);
+        response = await getPriceBoard(req, url, metric);
         break;
       case 'price-depth':
-        response = await getPriceDepth(req, url);
+        response = await getPriceDepth(req, url, metric);
         break;
       case 'indices':
-        response = await getMarketIndices();
+        response = await getMarketIndices(metric);
         break;
       case 'market-status':
+        metric.success = true;
         response = new Response(
-          JSON.stringify({ isOpen: isMarketOpen(), timestamp: Date.now() }),
+          JSON.stringify({ 
+            isOpen: isMarketOpen(), 
+            timestamp: Date.now(),
+            metrics: getMetricsSummary()
+          }),
           { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
         break;
+      case 'health':
+        response = new Response(
+          JSON.stringify({ 
+            status: 'healthy',
+            uptime: Date.now(),
+            metrics: getMetricsSummary(),
+            circuits: Object.entries(circuits).map(([name, state]) => ({ name, ...state })),
+          }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+        metric.success = true;
+        break;
       default:
         response = new Response(
-          JSON.stringify({ error: 'Invalid action. Use: history, intraday, symbols, symbols-by-group, price-board, price-depth, indices, market-status' }),
+          JSON.stringify({ error: 'Invalid action. Use: history, intraday, symbols, symbols-by-group, price-board, price-depth, indices, market-status, health' }),
           { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
     }
 
-    console.log(`[VN-Stock] Completed in ${Date.now() - startTime}ms`);
+    const duration = Date.now() - startTime;
+    console.log(`[VN-Stock] ${action} completed in ${duration}ms`);
+    
+    recordMetric(metric);
     return response;
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    metric.success = false;
+    metric.error = errorMessage;
+    recordMetric(metric);
+    
     console.error('[VN-Stock] Error:', errorMessage);
     return new Response(
       JSON.stringify({ error: errorMessage }),
@@ -175,8 +549,11 @@ serve(async (req: Request) => {
   }
 });
 
-// Get stock OHLCV history (daily/weekly/monthly)
-async function getStockHistory(url: URL) {
+// ============================================================================
+// API HANDLERS
+// ============================================================================
+
+async function getStockHistory(url: URL, metric: RequestMetrics) {
   const symbol = url.searchParams.get('symbol') || 'VCB';
   const start = url.searchParams.get('start') || '2024-01-01';
   const end = url.searchParams.get('end') || new Date().toISOString().split('T')[0];
@@ -185,53 +562,128 @@ async function getStockHistory(url: URL) {
   const cacheKey = `history:${symbol}:${start}:${end}:${interval}`;
   const cached = getCached(cacheKey, CACHE_TTL['history']);
   if (cached) {
+    metric.cacheHit = true;
+    metric.success = true;
     return new Response(JSON.stringify(cached), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   }
 
   console.log(`[VN-Stock] History: ${symbol} | ${start} -> ${end} | ${interval}`);
 
-  const startDate = new Date(start);
-  const endDate = new Date(end);
-  endDate.setDate(endDate.getDate() + 1);
+  // Use deduplicated fetch
+  const result = await deduplicatedFetch(cacheKey, async () => {
+    const startDate = new Date(start);
+    const endDate = new Date(end);
+    endDate.setDate(endDate.getDate() + 1);
 
-  const endStamp = Math.floor(endDate.getTime() / 1000);
-  const intervalValue = INTERVAL_MAP[interval] || 'ONE_DAY';
+    const endStamp = Math.floor(endDate.getTime() / 1000);
+    const intervalValue = INTERVAL_MAP[interval] || 'ONE_DAY';
 
-  const diffDays = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
-  let countBack = Math.ceil(diffDays * 1.5);
+    const diffDays = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
+    let countBack = Math.ceil(diffDays * 1.5);
 
-  if (intervalValue === 'ONE_HOUR') {
-    countBack = Math.ceil(diffDays * 7);
-  } else if (intervalValue === 'ONE_MINUTE') {
-    countBack = Math.ceil(diffDays * 400);
-  }
+    if (intervalValue === 'ONE_HOUR') {
+      countBack = Math.ceil(diffDays * 7);
+    } else if (intervalValue === 'ONE_MINUTE') {
+      countBack = Math.ceil(diffDays * 400);
+    }
 
-  const payload = {
-    timeFrame: intervalValue,
-    symbols: [symbol.toUpperCase()],
-    to: endStamp,
-    countBack: Math.min(countBack, 5000)
-  };
+    const payload = {
+      timeFrame: intervalValue,
+      symbols: [symbol.toUpperCase()],
+      to: endStamp,
+      countBack: Math.min(countBack, 5000)
+    };
 
-  const response = await fetchWithRetry(`${VCI_TRADING_URL}chart/OHLCChart/gap-chart`, {
-    method: 'POST',
-    headers: vciHeaders,
-    body: JSON.stringify(payload)
+    const response = await fetchWithRetry(`${VCI_TRADING_URL}chart/OHLCChart/gap-chart`, {
+      method: 'POST',
+      headers: vciHeaders,
+      body: JSON.stringify(payload)
+    }, 'ohlc');
+
+    if (!response.ok) {
+      throw new Error(`VCI API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const ohlcv: any[] = [];
+    
+    if (Array.isArray(data) && data.length > 0) {
+      const symbolData = data[0];
+      if (symbolData && symbolData.o && Array.isArray(symbolData.o)) {
+        for (let i = 0; i < symbolData.t.length; i++) {
+          const timestamp = symbolData.t[i] * 1000;
+          if (timestamp >= startDate.getTime() && timestamp <= endDate.getTime()) {
+            ohlcv.push({
+              time: symbolData.t[i],
+              open: symbolData.o[i] / 1000,
+              high: symbolData.h[i] / 1000,
+              low: symbolData.l[i] / 1000,
+              close: symbolData.c[i] / 1000,
+              volume: symbolData.v[i]
+            });
+          }
+        }
+      }
+    }
+
+    return { symbol, data: ohlcv, count: ohlcv.length };
   });
 
-  if (!response.ok) {
-    throw new Error(`VCI API error: ${response.status}`);
+  setCache(cacheKey, result);
+  metric.success = true;
+
+  console.log(`[VN-Stock] History: ${result.count} candles`);
+  return new Response(JSON.stringify(result), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+}
+
+async function getIntradayData(url: URL, metric: RequestMetrics) {
+  const symbol = url.searchParams.get('symbol') || 'VCB';
+  const interval = url.searchParams.get('interval') || '1m';
+
+  const cacheKey = `intraday:${symbol}:${interval}`;
+  const cached = getCached(cacheKey, CACHE_TTL['intraday']);
+  if (cached) {
+    metric.cacheHit = true;
+    metric.success = true;
+    return new Response(JSON.stringify(cached), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   }
 
-  const data = await response.json();
-  const ohlcv: any[] = [];
-  
-  if (Array.isArray(data) && data.length > 0) {
-    const symbolData = data[0];
-    if (symbolData && symbolData.o && Array.isArray(symbolData.o)) {
-      for (let i = 0; i < symbolData.t.length; i++) {
-        const timestamp = symbolData.t[i] * 1000;
-        if (timestamp >= startDate.getTime() && timestamp <= endDate.getTime()) {
+  console.log(`[VN-Stock] Intraday: ${symbol} | ${interval}`);
+
+  const result = await deduplicatedFetch(cacheKey, async () => {
+    const now = new Date();
+    const endStamp = Math.floor(now.getTime() / 1000);
+    
+    let countBack = 500;
+    if (interval === '5m') countBack = 200;
+    if (interval === '15m') countBack = 100;
+    if (interval === '30m') countBack = 50;
+    if (interval === '1H') countBack = 30;
+
+    const payload = {
+      timeFrame: INTERVAL_MAP[interval] || 'ONE_MINUTE',
+      symbols: [symbol.toUpperCase()],
+      to: endStamp,
+      countBack
+    };
+
+    const response = await fetchWithRetry(`${VCI_TRADING_URL}chart/OHLCChart/gap-chart`, {
+      method: 'POST',
+      headers: vciHeaders,
+      body: JSON.stringify(payload)
+    }, 'ohlc');
+
+    if (!response.ok) {
+      throw new Error(`VCI API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const ohlcv: any[] = [];
+    
+    if (Array.isArray(data) && data.length > 0) {
+      const symbolData = data[0];
+      if (symbolData && symbolData.o && Array.isArray(symbolData.o)) {
+        for (let i = 0; i < symbolData.t.length; i++) {
           ohlcv.push({
             time: symbolData.t[i],
             open: symbolData.o[i] / 1000,
@@ -243,161 +695,170 @@ async function getStockHistory(url: URL) {
         }
       }
     }
-  }
 
-  const result = { symbol, data: ohlcv, count: ohlcv.length };
+    return { 
+      symbol, 
+      interval,
+      data: ohlcv, 
+      count: ohlcv.length,
+      marketOpen: isMarketOpen(),
+      timestamp: Date.now()
+    };
+  });
+
   setCache(cacheKey, result);
+  metric.success = true;
 
-  console.log(`[VN-Stock] History: ${ohlcv.length} candles`);
+  console.log(`[VN-Stock] Intraday: ${result.count} candles`);
   return new Response(JSON.stringify(result), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 }
 
-// Get intraday real-time data (1m, 5m, 15m, 30m, 1H)
-async function getIntradayData(url: URL) {
-  const symbol = url.searchParams.get('symbol') || 'VCB';
-  const interval = url.searchParams.get('interval') || '1m';
-
-  const cacheKey = `intraday:${symbol}:${interval}`;
-  const cached = getCached(cacheKey, CACHE_TTL['intraday']);
+async function getAllSymbols(metric: RequestMetrics) {
+  const cacheKey = 'symbols:all';
+  const cached = getCached(cacheKey, CACHE_TTL['symbols']);
   if (cached) {
+    metric.cacheHit = true;
+    metric.success = true;
     return new Response(JSON.stringify(cached), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   }
 
-  console.log(`[VN-Stock] Intraday: ${symbol} | ${interval}`);
+  console.log('[VN-Stock] Fetching all symbols');
 
-  // For intraday, get last 3 days of minute data
+  const result = await deduplicatedFetch(cacheKey, async () => {
+    const response = await fetchWithRetry(`${VCI_TRADING_URL}price/symbols/getAll`, {
+      method: 'GET',
+      headers: vciHeaders
+    }, 'symbols');
+
+    if (!response.ok) {
+      throw new Error(`VCI API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const symbols = data.map((item: any) => ({
+      symbol: item.symbol,
+      name: item.organName || item.enOrganName,
+      shortName: item.organShortName || item.enOrganShortName,
+      exchange: item.board,
+      type: item.type
+    }));
+
+    return { data: symbols, count: symbols.length };
+  });
+
+  setCache(cacheKey, result);
+  metric.success = true;
+
+  console.log(`[VN-Stock] Symbols: ${result.count}`);
+  return new Response(JSON.stringify(result), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+}
+
+async function getSymbolsByGroup(url: URL, metric: RequestMetrics) {
+  const group = url.searchParams.get('group') || 'VN30';
+  
+  const cacheKey = `symbols:${group}`;
+  const cached = getCached(cacheKey, CACHE_TTL['symbols']);
+  if (cached) {
+    metric.cacheHit = true;
+    metric.success = true;
+    return new Response(JSON.stringify(cached), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+  }
+
+  console.log(`[VN-Stock] Symbols by group: ${group}`);
+
+  const result = await deduplicatedFetch(cacheKey, async () => {
+    const response = await fetchWithRetry(`${VCI_TRADING_URL}price/symbols/getByGroup?group=${group}`, {
+      method: 'GET',
+      headers: vciHeaders
+    }, 'symbols');
+
+    if (!response.ok) {
+      throw new Error(`VCI API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const symbols = data.map((item: any) => ({
+      symbol: item.symbol,
+      name: item.organName || item.enOrganName,
+      shortName: item.organShortName || item.enOrganShortName,
+      exchange: item.board,
+      type: item.type
+    }));
+
+    return { group, data: symbols, count: symbols.length };
+  });
+
+  setCache(cacheKey, result);
+  metric.success = true;
+
+  return new Response(JSON.stringify(result), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+}
+
+// Core price board fetcher (used by batch processor)
+async function fetchPriceBoardData(symbols: string[]): Promise<any[]> {
   const now = new Date();
   const endStamp = Math.floor(now.getTime() / 1000);
   
-  let countBack = 500; // ~8 hours of 1m data
-  if (interval === '5m') countBack = 200;
-  if (interval === '15m') countBack = 100;
-  if (interval === '30m') countBack = 50;
-  if (interval === '1H') countBack = 30;
-
   const payload = {
-    timeFrame: INTERVAL_MAP[interval] || 'ONE_MINUTE',
-    symbols: [symbol.toUpperCase()],
+    timeFrame: 'ONE_DAY',
+    symbols: symbols.map(s => s.toUpperCase()),
     to: endStamp,
-    countBack
+    countBack: 2
   };
 
   const response = await fetchWithRetry(`${VCI_TRADING_URL}chart/OHLCChart/gap-chart`, {
     method: 'POST',
     headers: vciHeaders,
     body: JSON.stringify(payload)
-  });
+  }, 'priceboard');
 
   if (!response.ok) {
-    throw new Error(`VCI API error: ${response.status}`);
+    throw new Error(`VCI OHLC API error: ${response.status}`);
   }
 
   const data = await response.json();
-  const ohlcv: any[] = [];
-  
-  if (Array.isArray(data) && data.length > 0) {
-    const symbolData = data[0];
-    if (symbolData && symbolData.o && Array.isArray(symbolData.o)) {
-      for (let i = 0; i < symbolData.t.length; i++) {
-        ohlcv.push({
-          time: symbolData.t[i],
-          open: symbolData.o[i] / 1000,
-          high: symbolData.h[i] / 1000,
-          low: symbolData.l[i] / 1000,
-          close: symbolData.c[i] / 1000,
-          volume: symbolData.v[i]
+  const transformed: any[] = [];
+
+  if (Array.isArray(data)) {
+    for (const symbolData of data) {
+      if (symbolData && symbolData.t && symbolData.t.length > 0) {
+        const lastIdx = symbolData.t.length - 1;
+        const prevIdx = lastIdx > 0 ? lastIdx - 1 : lastIdx;
+        
+        const currentClose = symbolData.c[lastIdx] / 1000;
+        const prevClose = symbolData.c[prevIdx] / 1000;
+        const change = currentClose - prevClose;
+        const changePercent = prevClose > 0 ? ((change / prevClose) * 100) : 0;
+
+        transformed.push({
+          symbol: symbolData.symbol || symbols[data.indexOf(symbolData)],
+          price: currentClose,
+          change: change,
+          changePercent: changePercent,
+          ceiling: 0,
+          floor: 0,
+          ref: prevClose,
+          open: symbolData.o[lastIdx] / 1000,
+          high: symbolData.h[lastIdx] / 1000,
+          low: symbolData.l[lastIdx] / 1000,
+          volume: symbolData.v[lastIdx],
+          value: 0,
+          foreignBuy: 0,
+          foreignSell: 0,
+          room: 0,
+          matchedVolume: symbolData.v[lastIdx],
+          matchedBy: '',
+          bid: [],
+          ask: []
         });
       }
     }
   }
 
-  const result = { 
-    symbol, 
-    interval,
-    data: ohlcv, 
-    count: ohlcv.length,
-    marketOpen: isMarketOpen(),
-    timestamp: Date.now()
-  };
-  setCache(cacheKey, result);
-
-  console.log(`[VN-Stock] Intraday: ${ohlcv.length} candles`);
-  return new Response(JSON.stringify(result), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+  return transformed;
 }
 
-// Get all symbols (cached heavily)
-async function getAllSymbols() {
-  const cacheKey = 'symbols:all';
-  const cached = getCached(cacheKey, CACHE_TTL['symbols']);
-  if (cached) {
-    return new Response(JSON.stringify(cached), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-  }
-
-  console.log('[VN-Stock] Fetching all symbols');
-
-  const response = await fetchWithRetry(`${VCI_TRADING_URL}price/symbols/getAll`, {
-    method: 'GET',
-    headers: vciHeaders
-  });
-
-  if (!response.ok) {
-    throw new Error(`VCI API error: ${response.status}`);
-  }
-
-  const data = await response.json();
-  const symbols = data.map((item: any) => ({
-    symbol: item.symbol,
-    name: item.organName || item.enOrganName,
-    shortName: item.organShortName || item.enOrganShortName,
-    exchange: item.board,
-    type: item.type
-  }));
-
-  const result = { data: symbols, count: symbols.length };
-  setCache(cacheKey, result);
-
-  console.log(`[VN-Stock] Symbols: ${symbols.length}`);
-  return new Response(JSON.stringify(result), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-}
-
-// Get symbols by group
-async function getSymbolsByGroup(url: URL) {
-  const group = url.searchParams.get('group') || 'VN30';
-  
-  const cacheKey = `symbols:${group}`;
-  const cached = getCached(cacheKey, CACHE_TTL['symbols']);
-  if (cached) {
-    return new Response(JSON.stringify(cached), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-  }
-
-  console.log(`[VN-Stock] Symbols by group: ${group}`);
-
-  const response = await fetchWithRetry(`${VCI_TRADING_URL}price/symbols/getByGroup?group=${group}`, {
-    method: 'GET',
-    headers: vciHeaders
-  });
-
-  if (!response.ok) {
-    throw new Error(`VCI API error: ${response.status}`);
-  }
-
-  const data = await response.json();
-  const symbols = data.map((item: any) => ({
-    symbol: item.symbol,
-    name: item.organName || item.enOrganName,
-    shortName: item.organShortName || item.enOrganShortName,
-    exchange: item.board,
-    type: item.type
-  }));
-
-  const result = { group, data: symbols, count: symbols.length };
-  setCache(cacheKey, result);
-
-  return new Response(JSON.stringify(result), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-}
-
-// Get real-time price board using OHLC API (stable fallback)
-async function getPriceBoard(req: Request, url: URL) {
+async function getPriceBoard(req: Request, url: URL, metric: RequestMetrics) {
   let symbols: string[] = [];
   
   const symbolsParam = url.searchParams.get('symbols');
@@ -412,89 +873,37 @@ async function getPriceBoard(req: Request, url: URL) {
     }
   }
 
-  const cacheKey = `priceboard:${symbols.sort().join(',')}`;
+  const sortedSymbols = [...symbols].sort();
+  const cacheKey = `priceboard:${sortedSymbols.join(',')}`;
   const cached = getCached(cacheKey, CACHE_TTL['price-board']);
   if (cached) {
+    metric.cacheHit = true;
+    metric.success = true;
     return new Response(JSON.stringify(cached), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   }
 
-  console.log(`[VN-Stock] Price board (OHLC): ${symbols.join(', ')}`);
-
-  // Use OHLC API which is more stable than GraphQL
-  const now = new Date();
-  const endStamp = Math.floor(now.getTime() / 1000);
-  
-  const payload = {
-    timeFrame: 'ONE_DAY',
-    symbols: symbols.map(s => s.toUpperCase()),
-    to: endStamp,
-    countBack: 2 // Get last 2 days to calculate change
-  };
+  console.log(`[VN-Stock] Price board: ${symbols.join(', ')}`);
 
   try {
-    const response = await fetchWithRetry(`${VCI_TRADING_URL}chart/OHLCChart/gap-chart`, {
-      method: 'POST',
-      headers: vciHeaders,
-      body: JSON.stringify(payload)
-    });
-
-    if (!response.ok) {
-      throw new Error(`VCI OHLC API error: ${response.status}`);
-    }
-
-    const data = await response.json();
-    const transformed: any[] = [];
-
-    if (Array.isArray(data)) {
-      for (const symbolData of data) {
-        if (symbolData && symbolData.t && symbolData.t.length > 0) {
-          const lastIdx = symbolData.t.length - 1;
-          const prevIdx = lastIdx > 0 ? lastIdx - 1 : lastIdx;
-          
-          const currentClose = symbolData.c[lastIdx] / 1000;
-          const prevClose = symbolData.c[prevIdx] / 1000;
-          const change = currentClose - prevClose;
-          const changePercent = prevClose > 0 ? ((change / prevClose) * 100) : 0;
-
-          transformed.push({
-            symbol: symbolData.symbol || symbols[data.indexOf(symbolData)],
-            price: currentClose,
-            change: change,
-            changePercent: changePercent,
-            ceiling: 0, // Not available from OHLC
-            floor: 0,
-            ref: prevClose,
-            open: symbolData.o[lastIdx] / 1000,
-            high: symbolData.h[lastIdx] / 1000,
-            low: symbolData.l[lastIdx] / 1000,
-            volume: symbolData.v[lastIdx],
-            value: 0,
-            foreignBuy: 0,
-            foreignSell: 0,
-            room: 0,
-            matchedVolume: symbolData.v[lastIdx],
-            matchedBy: '',
-            bid: [],
-            ask: []
-          });
-        }
-      }
-    }
+    // Use batched request for efficiency
+    const transformed = await batchedPriceRequest(symbols);
 
     const finalResult = { 
       data: transformed, 
       count: transformed.length,
       marketOpen: isMarketOpen(),
       timestamp: Date.now(),
-      source: 'ohlc'
+      source: 'ohlc-batched'
     };
+    
     setCache(cacheKey, finalResult);
+    metric.success = true;
 
     return new Response(JSON.stringify(finalResult), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   } catch (err) {
-    // Return empty result instead of error to not break UI
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[VN-Stock] Price board error:', msg);
+    metric.error = msg;
     
     const emptyResult = {
       data: symbols.map(s => ({
@@ -529,8 +938,7 @@ async function getPriceBoard(req: Request, url: URL) {
   }
 }
 
-// Get price depth (bid/ask only - ultra fast)
-async function getPriceDepth(req: Request, url: URL) {
+async function getPriceDepth(req: Request, url: URL, metric: RequestMetrics) {
   let symbols: string[] = [];
   
   const symbolsParam = url.searchParams.get('symbols');
@@ -546,69 +954,75 @@ async function getPriceDepth(req: Request, url: URL) {
   }
 
   const cacheKey = `depth:${symbols.sort().join(',')}`;
-  const cached = getCached(cacheKey, CACHE_TTL['price-board']);
+  const cached = getCached(cacheKey, CACHE_TTL['price-depth']);
   if (cached) {
+    metric.cacheHit = true;
+    metric.success = true;
     return new Response(JSON.stringify(cached), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   }
 
-  // Minimal query for speed
-  const payload = {
-    query: `{
-      MarketPriceBoard(codes: ${JSON.stringify(symbols)}) {
-        stockSymbol
-        matchedPrice
-        matchedVolume
-        matchedBy
-        priceChange
-        buyPrice1 buyVolume1 buyPrice2 buyVolume2 buyPrice3 buyVolume3
-        sellPrice1 sellVolume1 sellPrice2 sellVolume2 sellPrice3 sellVolume3
-      }
-    }`,
-    variables: {}
-  };
+  const result = await deduplicatedFetch(cacheKey, async () => {
+    const payload = {
+      query: `{
+        MarketPriceBoard(codes: ${JSON.stringify(symbols)}) {
+          stockSymbol
+          matchedPrice
+          matchedVolume
+          matchedBy
+          priceChange
+          buyPrice1 buyVolume1 buyPrice2 buyVolume2 buyPrice3 buyVolume3
+          sellPrice1 sellVolume1 sellPrice2 sellVolume2 sellPrice3 sellVolume3
+        }
+      }`,
+      variables: {}
+    };
 
-  const response = await fetchWithRetry(VCI_GRAPHQL_URL, {
-    method: 'POST',
-    headers: vciHeaders,
-    body: JSON.stringify(payload)
+    const response = await fetchWithRetry(VCI_GRAPHQL_URL, {
+      method: 'POST',
+      headers: vciHeaders,
+      body: JSON.stringify(payload)
+    }, 'graphql');
+
+    if (!response.ok) {
+      throw new Error(`VCI GraphQL error: ${response.status}`);
+    }
+
+    const gqlResult = await response.json();
+    const priceData = gqlResult.data?.MarketPriceBoard || [];
+
+    const transformed = priceData.map((item: any) => ({
+      symbol: item.stockSymbol,
+      price: item.matchedPrice / 1000,
+      change: item.priceChange / 1000,
+      lastVolume: item.matchedVolume,
+      side: item.matchedBy,
+      bid: [
+        { price: item.buyPrice1 / 1000, volume: item.buyVolume1 },
+        { price: item.buyPrice2 / 1000, volume: item.buyVolume2 },
+        { price: item.buyPrice3 / 1000, volume: item.buyVolume3 }
+      ],
+      ask: [
+        { price: item.sellPrice1 / 1000, volume: item.sellVolume1 },
+        { price: item.sellPrice2 / 1000, volume: item.sellVolume2 },
+        { price: item.sellPrice3 / 1000, volume: item.sellVolume3 }
+      ]
+    }));
+
+    return { data: transformed, timestamp: Date.now() };
   });
 
-  if (!response.ok) {
-    throw new Error(`VCI GraphQL error: ${response.status}`);
-  }
+  setCache(cacheKey, result);
+  metric.success = true;
 
-  const result = await response.json();
-  const priceData = result.data?.MarketPriceBoard || [];
-
-  const transformed = priceData.map((item: any) => ({
-    symbol: item.stockSymbol,
-    price: item.matchedPrice / 1000,
-    change: item.priceChange / 1000,
-    lastVolume: item.matchedVolume,
-    side: item.matchedBy,
-    bid: [
-      { price: item.buyPrice1 / 1000, volume: item.buyVolume1 },
-      { price: item.buyPrice2 / 1000, volume: item.buyVolume2 },
-      { price: item.buyPrice3 / 1000, volume: item.buyVolume3 }
-    ],
-    ask: [
-      { price: item.sellPrice1 / 1000, volume: item.sellVolume1 },
-      { price: item.sellPrice2 / 1000, volume: item.sellVolume2 },
-      { price: item.sellPrice3 / 1000, volume: item.sellVolume3 }
-    ]
-  }));
-
-  const finalResult = { data: transformed, timestamp: Date.now() };
-  setCache(cacheKey, finalResult);
-
-  return new Response(JSON.stringify(finalResult), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+  return new Response(JSON.stringify(result), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 }
 
-// Get market indices - fetching from dedicated index endpoint
-async function getMarketIndices() {
+async function getMarketIndices(metric: RequestMetrics) {
   const cacheKey = 'indices';
   const cached = getCached(cacheKey, CACHE_TTL['indices']);
   if (cached) {
+    metric.cacheHit = true;
+    metric.success = true;
     return new Response(JSON.stringify(cached), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   }
 
@@ -626,6 +1040,7 @@ async function getMarketIndices() {
     };
 
     setCache(cacheKey, result);
+    metric.success = true;
 
     console.log(
       '[VN-Stock] Indices:',
@@ -634,9 +1049,9 @@ async function getMarketIndices() {
 
     return new Response(JSON.stringify(result), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   } catch (err) {
-    // Never hard-fail the UI: return empty payload with error info
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[VN-Stock] Indices error:', msg);
+    metric.error = msg;
 
     const result = {
       data: [],
@@ -651,9 +1066,7 @@ async function getMarketIndices() {
   }
 }
 
-// Fetch indices via OHLC with proper scaling (no /1000 for index points)
 async function fetchIndicesViaOHLC() {
-  // Try multiple symbol variations for each index
   const indexConfigs = [
     { outputSymbol: 'VNINDEX', trySymbols: ['VNINDEX'] },
     { outputSymbol: 'HNXINDEX', trySymbols: ['HNX-INDEX', 'HNXINDEX', 'HNX'] },
@@ -675,7 +1088,7 @@ async function fetchIndicesViaOHLC() {
       method: 'POST',
       headers: vciHeaders,
       body: JSON.stringify(payload),
-    });
+    }, 'indices');
 
     if (!res.ok) {
       console.log(`[VN-Stock] OHLC ${symbol}: status ${res.status}`);
@@ -692,7 +1105,6 @@ async function fetchIndicesViaOHLC() {
 
     const len = s.c.length;
     
-    // For indices, values are typically NOT divided by 1000
     const rawClose = Number(s.c[len - 1]);
     const isIndex = rawClose > 50;
     const scale = isIndex ? 1 : 1000;
@@ -736,5 +1148,3 @@ async function fetchIndicesViaOHLC() {
 
   return results.filter(Boolean);
 }
-
-

@@ -1,5 +1,9 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 
+// ============================================================================
+// TYPE DEFINITIONS
+// ============================================================================
+
 export interface OHLCVData {
   time: number;
   open: number;
@@ -52,7 +56,129 @@ export interface MarketStatus {
   timestamp: number;
 }
 
-// Check if Vietnam stock market is open (client-side)
+// ============================================================================
+// CLIENT-SIDE CACHE - Stale-While-Revalidate Pattern
+// ============================================================================
+
+interface CacheEntry<T> {
+  data: T;
+  timestamp: number;
+  staleAt: number;
+  expireAt: number;
+}
+
+const clientCache = new Map<string, CacheEntry<any>>();
+
+const CACHE_CONFIG = {
+  // Fresh duration (won't refetch)
+  fresh: {
+    'history': 60000,       // 1 min
+    'intraday': 2000,       // 2s
+    'symbols': 300000,      // 5 min
+    'price-board': 2000,    // 2s
+    'indices': 3000,        // 3s
+  },
+  // Stale duration (can use but refetch in background)
+  stale: {
+    'history': 300000,      // 5 min
+    'intraday': 10000,      // 10s
+    'symbols': 600000,      // 10 min
+    'price-board': 10000,   // 10s
+    'indices': 15000,       // 15s
+  }
+};
+
+function getFromCache<T>(key: string): { data: T | null; isStale: boolean } {
+  const entry = clientCache.get(key);
+  if (!entry) return { data: null, isStale: false };
+  
+  const now = Date.now();
+  
+  // Expired - don't use
+  if (now > entry.expireAt) {
+    clientCache.delete(key);
+    return { data: null, isStale: false };
+  }
+  
+  // Fresh - use directly
+  if (now < entry.staleAt) {
+    return { data: entry.data, isStale: false };
+  }
+  
+  // Stale - use but trigger background refresh
+  return { data: entry.data, isStale: true };
+}
+
+function setToCache<T>(key: string, data: T, type: keyof typeof CACHE_CONFIG.fresh): void {
+  const now = Date.now();
+  clientCache.set(key, {
+    data,
+    timestamp: now,
+    staleAt: now + CACHE_CONFIG.fresh[type],
+    expireAt: now + CACHE_CONFIG.stale[type],
+  });
+}
+
+// ============================================================================
+// REQUEST DEDUPLICATION - Prevent duplicate in-flight requests
+// ============================================================================
+
+const pendingRequests = new Map<string, Promise<any>>();
+
+async function deduplicatedFetch<T>(
+  key: string,
+  fetchFn: () => Promise<T>
+): Promise<T> {
+  const pending = pendingRequests.get(key);
+  if (pending) {
+    console.log(`[Dedup] Reusing request: ${key.substring(0, 40)}...`);
+    return pending as Promise<T>;
+  }
+  
+  const promise = fetchFn().finally(() => {
+    pendingRequests.delete(key);
+  });
+  
+  pendingRequests.set(key, promise);
+  return promise;
+}
+
+// ============================================================================
+// SMART FETCH - With timeout and abort
+// ============================================================================
+
+const FETCH_TIMEOUT = 10000; // 10s
+
+async function smartFetch(
+  url: string,
+  options: RequestInit = {},
+  signal?: AbortSignal
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
+  
+  // Combine signals if provided
+  if (signal) {
+    signal.addEventListener('abort', () => controller.abort());
+  }
+  
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    return response;
+  } catch (error) {
+    clearTimeout(timeoutId);
+    throw error;
+  }
+}
+
+// ============================================================================
+// MARKET STATUS HOOK
+// ============================================================================
+
 export function useMarketStatus() {
   const [isOpen, setIsOpen] = useState(false);
 
@@ -75,22 +201,37 @@ export function useMarketStatus() {
     };
 
     checkMarket();
-    const interval = setInterval(checkMarket, 60000); // Check every minute
+    const interval = setInterval(checkMarket, 60000);
     return () => clearInterval(interval);
   }, []);
 
   return isOpen;
 }
 
-// Stock history hook with smart caching
+// ============================================================================
+// STOCK HISTORY HOOK - Optimized with SWR pattern
+// ============================================================================
+
 export function useStockHistory(symbol: string, start: string, end?: string, interval: string = '1D') {
   const [data, setData] = useState<OHLCVData[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const isMountedRef = useRef(true);
 
-  const fetchHistory = useCallback(async () => {
+  const fetchHistory = useCallback(async (background = false) => {
     if (!symbol) return;
+    
+    const endDate = end || new Date().toISOString().split('T')[0];
+    const cacheKey = `history:${symbol}:${start}:${endDate}:${interval}`;
+    
+    // Check cache first
+    const cached = getFromCache<{ data: OHLCVData[] }>(cacheKey);
+    if (cached.data) {
+      setData(cached.data.data);
+      if (!cached.isStale) return; // Fresh data, no need to fetch
+      if (background) return; // Already have stale data for display
+    }
     
     // Cancel previous request
     if (abortControllerRef.current) {
@@ -98,41 +239,49 @@ export function useStockHistory(symbol: string, start: string, end?: string, int
     }
     abortControllerRef.current = new AbortController();
     
-    setLoading(true);
+    if (!background) setLoading(true);
     setError(null);
 
     try {
-      const endDate = end || new Date().toISOString().split('T')[0];
       const projectUrl = import.meta.env.VITE_SUPABASE_URL;
+      const url = `${projectUrl}/functions/v1/vn-stock-data?action=history&symbol=${symbol}&start=${start}&end=${endDate}&interval=${interval}`;
       
-      const res = await fetch(
-        `${projectUrl}/functions/v1/vn-stock-data?action=history&symbol=${symbol}&start=${start}&end=${endDate}&interval=${interval}`,
-        {
-          headers: { 'Content-Type': 'application/json' },
-          signal: abortControllerRef.current.signal
-        }
-      );
+      const result = await deduplicatedFetch(cacheKey, async () => {
+        const res = await smartFetch(
+          url,
+          { headers: { 'Content-Type': 'application/json' } },
+          abortControllerRef.current?.signal
+        );
 
-      if (!res.ok) throw new Error(`API error: ${res.status}`);
+        if (!res.ok) throw new Error(`API error: ${res.status}`);
+        return res.json();
+      });
 
-      const result = await res.json();
       if (result.error) throw new Error(result.error);
+      if (!isMountedRef.current) return;
 
-      console.log('[useStockHistory] Got data:', result.count, 'candles');
+      setToCache(cacheKey, result, 'history');
       setData(result.data || []);
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') return;
+      if (!isMountedRef.current) return;
+      
       const errorMessage = err instanceof Error ? err.message : 'Failed to fetch stock history';
       setError(errorMessage);
       console.error('[useStockHistory] Error:', errorMessage);
     } finally {
-      setLoading(false);
+      if (isMountedRef.current && !background) {
+        setLoading(false);
+      }
     }
   }, [symbol, start, end, interval]);
 
   useEffect(() => {
+    isMountedRef.current = true;
     fetchHistory();
+    
     return () => {
+      isMountedRef.current = false;
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
       }
@@ -142,63 +291,89 @@ export function useStockHistory(symbol: string, start: string, end?: string, int
   return { data, loading, error, refetch: fetchHistory };
 }
 
-// Intraday data hook for real-time chart updates
+// ============================================================================
+// INTRADAY DATA HOOK - Smart polling
+// ============================================================================
+
 export function useIntradayData(symbol: string, interval: string = '1m', autoRefresh: boolean = true) {
   const [data, setData] = useState<OHLCVData[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<number>(0);
   const isMarketOpen = useMarketStatus();
+  const isMountedRef = useRef(true);
 
-  const fetchIntraday = useCallback(async () => {
+  const fetchIntraday = useCallback(async (background = false) => {
     if (!symbol) return;
 
-    setLoading(true);
+    const cacheKey = `intraday:${symbol}:${interval}`;
+    
+    // Check cache
+    const cached = getFromCache<{ data: OHLCVData[]; timestamp: number }>(cacheKey);
+    if (cached.data) {
+      setData(cached.data.data);
+      setLastUpdate(cached.data.timestamp);
+      if (!cached.isStale) return;
+    }
+
+    if (!background) setLoading(true);
     setError(null);
 
     try {
       const projectUrl = import.meta.env.VITE_SUPABASE_URL;
-      const res = await fetch(
-        `${projectUrl}/functions/v1/vn-stock-data?action=intraday&symbol=${symbol}&interval=${interval}`,
-        { headers: { 'Content-Type': 'application/json' } }
-      );
+      const url = `${projectUrl}/functions/v1/vn-stock-data?action=intraday&symbol=${symbol}&interval=${interval}`;
+      
+      const result = await deduplicatedFetch(cacheKey, async () => {
+        const res = await smartFetch(url, { headers: { 'Content-Type': 'application/json' } });
+        if (!res.ok) throw new Error(`API error: ${res.status}`);
+        return res.json();
+      });
 
-      if (!res.ok) throw new Error(`API error: ${res.status}`);
-
-      const result = await res.json();
       if (result.error) throw new Error(result.error);
+      if (!isMountedRef.current) return;
 
+      setToCache(cacheKey, result, 'intraday');
       setData(result.data || []);
       setLastUpdate(result.timestamp || Date.now());
     } catch (err) {
+      if (!isMountedRef.current) return;
       const errorMessage = err instanceof Error ? err.message : 'Failed to fetch intraday data';
       setError(errorMessage);
       console.error('[useIntradayData] Error:', errorMessage);
     } finally {
-      setLoading(false);
+      if (isMountedRef.current && !background) {
+        setLoading(false);
+      }
     }
   }, [symbol, interval]);
 
   useEffect(() => {
+    isMountedRef.current = true;
     fetchIntraday();
     
     if (!autoRefresh) return;
 
-    // Refresh every 3s during market hours, 30s otherwise
+    // Adaptive polling: faster during market hours
     const refreshMs = isMarketOpen ? 3000 : 30000;
     const timer = setInterval(() => {
       if (isMarketOpen || !['1m', '5m', '15m', '30m'].includes(interval)) {
-        fetchIntraday();
+        fetchIntraday(true); // Background refresh
       }
     }, refreshMs);
 
-    return () => clearInterval(timer);
+    return () => {
+      isMountedRef.current = false;
+      clearInterval(timer);
+    };
   }, [fetchIntraday, autoRefresh, isMarketOpen, interval]);
 
   return { data, loading, error, lastUpdate, refetch: fetchIntraday, isMarketOpen };
 }
 
-// Symbols hook with caching
+// ============================================================================
+// SYMBOLS HOOK - Heavy caching
+// ============================================================================
+
 export function useSymbols(group?: string) {
   const [symbols, setSymbols] = useState<StockSymbol[]>([]);
   const [loading, setLoading] = useState(false);
@@ -206,6 +381,15 @@ export function useSymbols(group?: string) {
 
   useEffect(() => {
     const fetchSymbols = async () => {
+      const cacheKey = group ? `symbols:${group}` : 'symbols:all';
+      
+      // Check cache
+      const cached = getFromCache<{ data: StockSymbol[] }>(cacheKey);
+      if (cached.data) {
+        setSymbols(cached.data.data);
+        if (!cached.isStale) return;
+      }
+
       setLoading(true);
       setError(null);
 
@@ -216,11 +400,13 @@ export function useSymbols(group?: string) {
           ? `${projectUrl}/functions/v1/vn-stock-data?action=${action}&group=${group}`
           : `${projectUrl}/functions/v1/vn-stock-data?action=${action}`;
 
-        const res = await fetch(url, { headers: { 'Content-Type': 'application/json' } });
+        const result = await deduplicatedFetch(cacheKey, async () => {
+          const res = await smartFetch(url, { headers: { 'Content-Type': 'application/json' } });
+          if (!res.ok) throw new Error(`API error: ${res.status}`);
+          return res.json();
+        });
 
-        if (!res.ok) throw new Error(`API error: ${res.status}`);
-
-        const result = await res.json();
+        setToCache(cacheKey, result, 'symbols');
         setSymbols(result.data || []);
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : 'Failed to fetch symbols';
@@ -237,7 +423,10 @@ export function useSymbols(group?: string) {
   return { symbols, loading, error };
 }
 
-// Price board hook with polling (configurable)
+// ============================================================================
+// PRICE BOARD HOOK - Optimized with batching
+// ============================================================================
+
 export function usePriceBoard(
   symbols: string[],
   autoRefresh: boolean = true,
@@ -248,144 +437,232 @@ export function usePriceBoard(
   const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<number>(0);
   const isMarketOpen = useMarketStatus();
-
   const inFlightRef = useRef(false);
+  const isMountedRef = useRef(true);
 
+  // Stable symbols key
   const normalizedSymbols = useMemo(() => {
     return [...symbols].map((s) => s.toUpperCase()).sort();
   }, [symbols.join(',')]);
 
   const symbolsKey = normalizedSymbols.join(',');
 
-  const fetchPrices = useCallback(async () => {
+  const fetchPrices = useCallback(async (background = false) => {
     if (normalizedSymbols.length === 0) return;
-    if (inFlightRef.current) return;
+    if (inFlightRef.current && !background) return;
+
+    const cacheKey = `priceboard:${symbolsKey}`;
+    
+    // Check cache
+    const cached = getFromCache<{ data: PriceData[]; timestamp: number }>(cacheKey);
+    if (cached.data) {
+      setPrices(cached.data.data);
+      setLastUpdate(cached.data.timestamp);
+      if (!cached.isStale) return;
+    }
 
     inFlightRef.current = true;
-    setLoading(true);
+    if (!background) setLoading(true);
     setError(null);
 
     try {
       const projectUrl = import.meta.env.VITE_SUPABASE_URL;
-      const res = await fetch(`${projectUrl}/functions/v1/vn-stock-data?action=price-board`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbols: normalizedSymbols })
+      
+      const result = await deduplicatedFetch(cacheKey, async () => {
+        const res = await smartFetch(`${projectUrl}/functions/v1/vn-stock-data?action=price-board`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ symbols: normalizedSymbols })
+        });
+
+        if (!res.ok) throw new Error(`API error: ${res.status}`);
+        return res.json();
       });
 
-      if (!res.ok) throw new Error(`API error: ${res.status}`);
+      if (result.error && !result.data) throw new Error(result.error);
+      if (!isMountedRef.current) return;
 
-      const result = await res.json();
-      if (result.error) throw new Error(result.error);
-
+      setToCache(cacheKey, result, 'price-board');
       setPrices(result.data || []);
       setLastUpdate(result.timestamp || Date.now());
     } catch (err) {
+      if (!isMountedRef.current) return;
       const errorMessage = err instanceof Error ? err.message : 'Failed to fetch prices';
       setError(errorMessage);
       console.error('[usePriceBoard] Error:', errorMessage);
     } finally {
       inFlightRef.current = false;
-      setLoading(false);
+      if (isMountedRef.current && !background) {
+        setLoading(false);
+      }
     }
-  }, [symbolsKey]);
+  }, [symbolsKey, normalizedSymbols]);
 
   useEffect(() => {
+    isMountedRef.current = true;
     fetchPrices();
 
     if (!autoRefresh) return;
 
+    // Adaptive polling based on market hours
     const intervalMs = refreshMs ?? (isMarketOpen ? 3000 : 30000);
-    const timer = setInterval(fetchPrices, intervalMs);
-    return () => clearInterval(timer);
+    const timer = setInterval(() => fetchPrices(true), intervalMs);
+    
+    return () => {
+      isMountedRef.current = false;
+      clearInterval(timer);
+    };
   }, [fetchPrices, autoRefresh, isMarketOpen, symbolsKey, refreshMs]);
 
   return { prices, loading, error, lastUpdate, refetch: fetchPrices, isMarketOpen };
 }
 
-// Fast price depth hook (minimal data for speed)
+// ============================================================================
+// PRICE DEPTH HOOK - Ultra-fast for order book
+// ============================================================================
+
 export function usePriceDepth(symbols: string[], autoRefresh: boolean = true) {
   const [depth, setDepth] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const isMarketOpen = useMarketStatus();
+  const isMountedRef = useRef(true);
+
+  const symbolsKey = [...symbols].sort().join(',');
 
   const fetchDepth = useCallback(async () => {
     if (symbols.length === 0) return;
 
+    const cacheKey = `depth:${symbolsKey}`;
+    
+    // Quick cache check
+    const cached = getFromCache<{ data: any[] }>(cacheKey);
+    if (cached.data && !cached.isStale) {
+      setDepth(cached.data.data);
+      return;
+    }
+
     try {
       const projectUrl = import.meta.env.VITE_SUPABASE_URL;
-      const res = await fetch(`${projectUrl}/functions/v1/vn-stock-data?action=price-depth`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbols })
+      
+      const result = await deduplicatedFetch(cacheKey, async () => {
+        const res = await smartFetch(`${projectUrl}/functions/v1/vn-stock-data?action=price-depth`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ symbols })
+        });
+
+        if (!res.ok) return { data: [] };
+        return res.json();
       });
 
-      if (!res.ok) return;
-      const result = await res.json();
+      if (!isMountedRef.current) return;
       setDepth(result.data || []);
     } catch {
       // Silent fail for depth
     } finally {
       setLoading(false);
     }
-  }, [symbols]);
+  }, [symbolsKey, symbols]);
 
   useEffect(() => {
+    isMountedRef.current = true;
     fetchDepth();
     
     if (!autoRefresh) return;
     
-    // Ultra-fast polling: 2s during market hours
+    // Ultra-fast polling during market hours
     const refreshMs = isMarketOpen ? 2000 : 60000;
     const timer = setInterval(fetchDepth, refreshMs);
-    return () => clearInterval(timer);
+    
+    return () => {
+      isMountedRef.current = false;
+      clearInterval(timer);
+    };
   }, [fetchDepth, autoRefresh, isMarketOpen]);
 
   return { depth, loading, refetch: fetchDepth, isMarketOpen };
 }
 
-// Market indices hook
+// ============================================================================
+// MARKET INDICES HOOK - With background refresh
+// ============================================================================
+
 export function useMarketIndices(autoRefresh: boolean = true) {
   const [indices, setIndices] = useState<IndexData[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<number>(0);
   const isMarketOpen = useMarketStatus();
+  const isMountedRef = useRef(true);
 
-  useEffect(() => {
-    const fetchIndices = async () => {
-      setLoading(true);
-      setError(null);
+  const fetchIndices = useCallback(async (background = false) => {
+    const cacheKey = 'indices';
+    
+    // Check cache
+    const cached = getFromCache<{ data: IndexData[]; timestamp: number }>(cacheKey);
+    if (cached.data) {
+      setIndices(cached.data.data);
+      setLastUpdate(cached.data.timestamp);
+      if (!cached.isStale) return;
+    }
 
-      try {
-        const projectUrl = import.meta.env.VITE_SUPABASE_URL;
-        const res = await fetch(`${projectUrl}/functions/v1/vn-stock-data?action=indices`, {
+    if (!background) setLoading(true);
+    setError(null);
+
+    try {
+      const projectUrl = import.meta.env.VITE_SUPABASE_URL;
+      
+      const result = await deduplicatedFetch(cacheKey, async () => {
+        const res = await smartFetch(`${projectUrl}/functions/v1/vn-stock-data?action=indices`, {
           headers: { 'Content-Type': 'application/json' }
         });
 
         if (!res.ok) throw new Error(`API error: ${res.status}`);
+        return res.json();
+      });
 
-        const result = await res.json();
-        setIndices(result.data || []);
-        setLastUpdate(result.timestamp || Date.now());
-      } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : 'Failed to fetch indices';
-        setError(errorMessage);
-        console.error('[useMarketIndices] Error:', errorMessage);
-      } finally {
+      if (!isMountedRef.current) return;
+
+      setToCache(cacheKey, result, 'indices');
+      setIndices(result.data || []);
+      setLastUpdate(result.timestamp || Date.now());
+    } catch (err) {
+      if (!isMountedRef.current) return;
+      const errorMessage = err instanceof Error ? err.message : 'Failed to fetch indices';
+      setError(errorMessage);
+      console.error('[useMarketIndices] Error:', errorMessage);
+    } finally {
+      if (isMountedRef.current && !background) {
         setLoading(false);
       }
-    };
+    }
+  }, []);
 
+  useEffect(() => {
+    isMountedRef.current = true;
     fetchIndices();
     
     if (!autoRefresh) return;
     
-    // 5s during market hours, 60s otherwise
+    // Adaptive polling
     const refreshMs = isMarketOpen ? 5000 : 60000;
-    const timer = setInterval(fetchIndices, refreshMs);
-    return () => clearInterval(timer);
-  }, [autoRefresh, isMarketOpen]);
+    const timer = setInterval(() => fetchIndices(true), refreshMs);
+    
+    return () => {
+      isMountedRef.current = false;
+      clearInterval(timer);
+    };
+  }, [fetchIndices, autoRefresh, isMarketOpen]);
 
   return { indices, loading, error, lastUpdate, isMarketOpen };
+}
+
+// ============================================================================
+// UTILITY: Clear all caches (for debugging)
+// ============================================================================
+
+export function clearAllCaches(): void {
+  clientCache.clear();
+  pendingRequests.clear();
+  console.log('[Cache] All caches cleared');
 }
