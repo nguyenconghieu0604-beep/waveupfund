@@ -8,8 +8,7 @@ import { cn } from '@/lib/utils';
 import type { Language } from '@/types';
 import { translations } from '@/lib/translations';
 import CandlestickChart from '@/components/charts/CandlestickChart';
-import { useMarketIndices } from '@/hooks/useVNStockData';
-
+import { useMarketIndices, usePriceBoard } from '@/hooks/useVNStockData';
 interface MarketCardProps {
   symbol: string;
   name: string;
@@ -170,17 +169,33 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
       }));
   }, [indices, isVi]);
 
-  // Top Vietnamese stocks watchlist
-  const watchlistData = [
-    { symbol: 'VCB', name: isVi ? 'Ngân hàng Vietcombank' : 'Vietcombank', price: '92,500', change: 1.87 },
-    { symbol: 'VHM', name: isVi ? 'Vinhomes' : 'Vinhomes JSC', price: '41,200', change: -0.72 },
-    { symbol: 'VIC', name: isVi ? 'Tập đoàn Vingroup' : 'Vingroup JSC', price: '43,850', change: 2.34 },
-    { symbol: 'HPG', name: isVi ? 'Hòa Phát Group' : 'Hoa Phat Group', price: '26,150', change: 1.15 },
-    { symbol: 'FPT', name: isVi ? 'Tập đoàn FPT' : 'FPT Corporation', price: '142,800', change: 3.21 },
-    { symbol: 'MBB', name: isVi ? 'Ngân hàng MB' : 'MB Bank', price: '27,400', change: -0.36 },
-    { symbol: 'MSN', name: isVi ? 'Tập đoàn Masan' : 'Masan Group', price: '78,500', change: 0.89 },
-    { symbol: 'VNM', name: isVi ? 'Vinamilk' : 'Vinamilk JSC', price: '72,300', change: -1.23 },
-  ];
+  // VN30 stocks - realtime data
+  const vn30Symbols = ['VCB', 'VHM', 'VIC', 'HPG', 'FPT', 'MBB', 'MSN', 'VNM'];
+  const { prices: vn30Prices, loading: vn30Loading, isMarketOpen: priceMarketOpen } = usePriceBoard(vn30Symbols, true);
+
+  const stockNames: Record<string, { vi: string; en: string }> = {
+    VCB: { vi: 'Ngân hàng Vietcombank', en: 'Vietcombank' },
+    VHM: { vi: 'Vinhomes', en: 'Vinhomes JSC' },
+    VIC: { vi: 'Tập đoàn Vingroup', en: 'Vingroup JSC' },
+    HPG: { vi: 'Hòa Phát Group', en: 'Hoa Phat Group' },
+    FPT: { vi: 'Tập đoàn FPT', en: 'FPT Corporation' },
+    MBB: { vi: 'Ngân hàng MB', en: 'MB Bank' },
+    MSN: { vi: 'Tập đoàn Masan', en: 'Masan Group' },
+    VNM: { vi: 'Vinamilk', en: 'Vinamilk JSC' },
+  };
+
+  const watchlistData = useMemo(() => {
+    return vn30Symbols.map((sym) => {
+      const priceData = vn30Prices.find((p) => p.symbol === sym);
+      const names = stockNames[sym] || { vi: sym, en: sym };
+      return {
+        symbol: sym,
+        name: isVi ? names.vi : names.en,
+        price: priceData ? priceData.price.toLocaleString('vi-VN') : '—',
+        change: priceData ? priceData.changePercent : 0,
+      };
+    });
+  }, [vn30Prices, isVi]);
 
 
   return (
@@ -306,6 +321,7 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
           height={450}
           autoRefresh={true}
           refreshInterval={30}
+          onSymbolChange={(sym) => setSelectedSymbol(sym)}
         />
       </motion.div>
 

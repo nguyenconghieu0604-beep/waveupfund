@@ -1,9 +1,22 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { createChart, ColorType, CandlestickSeries, HistogramSeries, ISeriesApi } from 'lightweight-charts';
-import { useStockHistory } from '@/hooks/useVNStockData';
+import { useStockHistory, useSymbols } from '@/hooks/useVNStockData';
 import { cn } from '@/lib/utils';
-import { Loader2, RefreshCw, Radio } from 'lucide-react';
+import { Loader2, RefreshCw, Radio, Search, X } from 'lucide-react';
 import type { Language } from '@/types';
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from '@/components/ui/command';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
 
 interface CandlestickChartProps {
   symbol: string;
@@ -13,16 +26,18 @@ interface CandlestickChartProps {
   height?: number;
   autoRefresh?: boolean;
   refreshInterval?: number; // in seconds
+  onSymbolChange?: (symbol: string) => void;
 }
 
 const CandlestickChart: React.FC<CandlestickChartProps> = ({
-  symbol,
+  symbol: initialSymbol,
   interval = '1D',
   className,
   lang = 'vi',
   height = 400,
   autoRefresh = true,
-  refreshInterval = 30
+  refreshInterval = 30,
+  onSymbolChange,
 }) => {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
@@ -30,9 +45,37 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({
   const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
   const refreshTimerRef = useRef<NodeJS.Timeout | null>(null);
   
+  const [symbol, setSymbol] = useState(initialSymbol);
   const [selectedInterval, setSelectedInterval] = useState(interval);
   const [isAutoRefresh, setIsAutoRefresh] = useState(autoRefresh);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  
+  // Symbol search state
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  
+  // Fetch symbols for search
+  const { symbols: allSymbols } = useSymbols();
+  
+  // Filter symbols based on search query
+  const filteredSymbols = useCallback(() => {
+    if (!searchQuery.trim()) {
+      // Show popular symbols when no query
+      const popular = ['VCB', 'FPT', 'VHM', 'HPG', 'VIC', 'MBB', 'MSN', 'VNM', 'TCB', 'ACB', 'BID', 'CTG', 'VPB', 'STB'];
+      return allSymbols.filter(s => popular.includes(s.symbol)).slice(0, 10);
+    }
+    const q = searchQuery.toUpperCase();
+    return allSymbols
+      .filter(s => s.symbol.includes(q) || s.name?.toUpperCase().includes(q))
+      .slice(0, 15);
+  }, [allSymbols, searchQuery]);
+
+  const handleSymbolSelect = (newSymbol: string) => {
+    setSymbol(newSymbol);
+    setSearchOpen(false);
+    setSearchQuery('');
+    onSymbolChange?.(newSymbol);
+  };
 
   // Check if market is open (9:00 - 15:00 Vietnam time, Mon-Fri)
   const isMarketOpen = useCallback(() => {
@@ -227,7 +270,54 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({
     <div className={cn("glass rounded-2xl p-4 border border-border/50", className)}>
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-4">
-          <h3 className="font-display text-xl font-bold text-foreground">{symbol}</h3>
+          {/* Symbol with search */}
+          <Popover open={searchOpen} onOpenChange={setSearchOpen}>
+            <PopoverTrigger asChild>
+              <button
+                className="flex items-center gap-2 px-3 py-2 rounded-xl bg-muted/50 hover:bg-muted transition-colors group"
+                title={lang === 'vi' ? 'Tìm kiếm mã cổ phiếu' : 'Search stock symbol'}
+              >
+                <Search size={16} className="text-muted-foreground group-hover:text-primary transition-colors" />
+                <span className="font-display text-xl font-bold text-foreground">{symbol}</span>
+              </button>
+            </PopoverTrigger>
+            <PopoverContent className="w-[300px] p-0" align="start">
+              <Command shouldFilter={false}>
+                <CommandInput 
+                  placeholder={lang === 'vi' ? 'Tìm mã cổ phiếu...' : 'Search symbol...'} 
+                  value={searchQuery}
+                  onValueChange={setSearchQuery}
+                />
+                <CommandList>
+                  <CommandEmpty>
+                    {lang === 'vi' ? 'Không tìm thấy mã cổ phiếu' : 'No symbol found'}
+                  </CommandEmpty>
+                  <CommandGroup heading={searchQuery ? (lang === 'vi' ? 'Kết quả' : 'Results') : (lang === 'vi' ? 'Phổ biến' : 'Popular')}>
+                    {filteredSymbols().map((s) => (
+                      <CommandItem
+                        key={s.symbol}
+                        value={s.symbol}
+                        onSelect={() => handleSymbolSelect(s.symbol)}
+                        className="flex items-center justify-between cursor-pointer"
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center text-xs font-bold text-primary">
+                            {s.symbol.slice(0, 2)}
+                          </div>
+                          <div>
+                            <p className="font-semibold text-foreground">{s.symbol}</p>
+                            <p className="text-xs text-muted-foreground line-clamp-1">{s.name}</p>
+                          </div>
+                        </div>
+                        <span className="text-xs text-muted-foreground">{s.exchange}</span>
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                </CommandList>
+              </Command>
+            </PopoverContent>
+          </Popover>
+          
           {data.length > 0 && (
             <span className="font-mono text-lg font-semibold text-foreground">
               {data[data.length - 1]?.close.toLocaleString('vi-VN')}
