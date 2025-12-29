@@ -15,6 +15,7 @@ interface MarketCardProps {
   price: string;
   change: number;
   changePercent: number;
+  volume?: number;
   delay?: number;
 }
 
@@ -182,13 +183,14 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
     };
 
     return (indices || [])
-      .filter((i) => ['VNINDEX', 'HNXINDEX', 'VN30', 'UPCOM'].includes(i.symbol))
+      .filter((i) => ['VNINDEX', 'VN30'].includes(i.symbol))
       .map((i) => ({
         symbol: formatIndexSymbol(i.symbol),
         name: nameBySymbol[i.symbol] ?? i.symbol,
         price: (i.price ?? 0).toLocaleString('vi-VN', { maximumFractionDigits: 2 }),
         change: Number(i.change ?? 0),
         changePercent: Number(i.changePercent ?? 0),
+        volume: i.volume ?? 0,
       }));
   }, [indices, isVi]);
 
@@ -253,12 +255,10 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
         </div>
       </motion.div>
 
-      {/* Stats Grid - Real-time from indices */}
+      {/* Stats Grid - Real-time from indices (chỉ HOSE & VN30 có dữ liệu ổn định) */}
       {(() => {
         const vnIndex = indices.find((i) => i.symbol === 'VNINDEX');
         const vn30 = indices.find((i) => i.symbol === 'VN30');
-        const hnx = indices.find((i) => i.symbol === 'HNXINDEX');
-        const upcom = indices.find((i) => i.symbol === 'UPCOM');
 
         const formatVolume = (vol: number) => {
           if (!vol) return '—';
@@ -268,7 +268,7 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
         };
 
         return (
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 gap-4">
             <StatCard
               icon={<Activity size={18} className="text-primary" />}
               label={isVi ? 'KL khớp HOSE' : 'HOSE Volume'}
@@ -284,22 +284,6 @@ const MarketOverview: React.FC<MarketOverviewProps> = ({ lang }) => {
               subValue={vn30 ? `${Number(vn30.changePercent) >= 0 ? '+' : ''}${vn30.changePercent}%` : '—'}
               trend={Number(vn30?.changePercent) >= 0 ? 'up' : 'down'}
               delay={0.15}
-            />
-            <StatCard
-              icon={<Building2 size={18} className="text-accent" />}
-              label={isVi ? 'HNX' : 'HNX Index'}
-              value={hnx ? hnx.price.toLocaleString('vi-VN', { maximumFractionDigits: 2 }) : '—'}
-              subValue={hnx ? `${Number(hnx.changePercent) >= 0 ? '+' : ''}${hnx.changePercent}%` : '—'}
-              trend={Number(hnx?.changePercent) >= 0 ? 'up' : 'down'}
-              delay={0.2}
-            />
-            <StatCard
-              icon={<BarChart3 size={18} className="text-secondary" />}
-              label={isVi ? 'UPCOM' : 'UPCOM Index'}
-              value={upcom ? upcom.price.toLocaleString('vi-VN', { maximumFractionDigits: 2 }) : '—'}
-              subValue={upcom ? `${Number(upcom.changePercent) >= 0 ? '+' : ''}${upcom.changePercent}%` : '—'}
-              trend={Number(upcom?.changePercent) >= 0 ? 'up' : 'down'}
-              delay={0.25}
             />
           </div>
         );
