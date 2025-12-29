@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { createChart, ColorType, CandlestickSeries, HistogramSeries, ISeriesApi } from 'lightweight-charts';
 import { useStockHistory, useSymbols } from '@/hooks/useVNStockData';
 import { cn } from '@/lib/utils';
@@ -55,10 +55,12 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   
   // Fetch symbols for search
-  const { symbols: allSymbols } = useSymbols();
+  const { symbols: allSymbols, loading: symbolsLoading } = useSymbols();
   
   // Filter symbols based on search query
-  const filteredSymbols = useCallback(() => {
+  const filteredSymbols = useMemo(() => {
+    if (!allSymbols || allSymbols.length === 0) return [];
+    
     if (!searchQuery.trim()) {
       // Show popular symbols when no query
       const popular = ['VCB', 'FPT', 'VHM', 'HPG', 'VIC', 'MBB', 'MSN', 'VNM', 'TCB', 'ACB', 'BID', 'CTG', 'VPB', 'STB'];
@@ -182,7 +184,13 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({
         mode: 1,
       },
       rightPriceScale: {
+        visible: true,
         borderColor: 'rgba(255, 255, 255, 0.1)',
+        autoScale: true,
+        scaleMargins: {
+          top: 0.1,
+          bottom: 0.2,
+        },
       },
       timeScale: {
         borderColor: 'rgba(255, 255, 255, 0.1)',
@@ -293,7 +301,11 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({
                     {lang === 'vi' ? 'Không tìm thấy mã cổ phiếu' : 'No symbol found'}
                   </CommandEmpty>
                   <CommandGroup heading={searchQuery ? (lang === 'vi' ? 'Kết quả' : 'Results') : (lang === 'vi' ? 'Phổ biến' : 'Popular')}>
-                    {filteredSymbols().map((s) => (
+                    {symbolsLoading ? (
+                      <div className="py-4 text-center text-sm text-muted-foreground">
+                        {lang === 'vi' ? 'Đang tải...' : 'Loading...'}
+                      </div>
+                    ) : filteredSymbols.map((s) => (
                       <CommandItem
                         key={s.symbol}
                         value={s.symbol}
